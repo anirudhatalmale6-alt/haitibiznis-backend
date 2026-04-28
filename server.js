@@ -6,7 +6,14 @@ const cors = require('cors');
 const app = express();
 
 app.use(cors({
-  origin: ['https://haitibiznis.com', 'https://www.haitibiznis.com', 'http://localhost:3000', 'http://127.0.0.1:5500'],
+  origin: function(origin, callback) {
+    const allowed = ['https://haitibiznis.com', 'https://www.haitibiznis.com', 'http://localhost:3000', 'http://127.0.0.1:5500'];
+    if (!origin || allowed.includes(origin) || origin.endsWith('.onrender.com') || origin.endsWith('.trycloudflare.com') || origin.endsWith('.github.io')) {
+      callback(null, true);
+    } else {
+      callback(null, true);
+    }
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type']
 }));
