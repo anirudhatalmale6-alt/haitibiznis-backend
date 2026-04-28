@@ -44,9 +44,11 @@ router.get('/:id/share', async (req, res) => {
 <meta property="og:title" content="${emoji} ${title.replace(/"/g, '&quot;')} — Tikè Lakay">
 <meta property="og:description" content="${desc.replace(/"/g, '&quot;')}">
 <meta property="og:url" content="${pageUrl}">
+<meta property="og:image" content="https://haitibiznis.com/assets/events-logo.png">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Tikè Lakay | HaitiBiznis">
-<meta name="twitter:card" content="summary">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://haitibiznis.com/assets/events-logo.png">
 <meta name="twitter:title" content="${emoji} ${title.replace(/"/g, '&quot;')}">
 <meta name="twitter:description" content="${desc.replace(/"/g, '&quot;')}">
 <meta http-equiv="refresh" content="0;url=${pageUrl}">
