@@ -29,6 +29,34 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/:id/share', async (req, res) => {
+  try {
+    const event = await Event.findById(req.params.id);
+    if (!event) return res.redirect('https://haitibiznis.com/events.html');
+    const title = event.title || 'Evènman';
+    const date = event.date ? new Date(event.date + 'T00:00:00').toLocaleDateString('fr-HT', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : '';
+    const loc = event.location || '';
+    const desc = `${date}${loc ? ' | ' + loc : ''}${event.description ? ' — ' + event.description.substring(0, 120) : ''}`;
+    const emoji = event.typeEmoji || '🎪';
+    const pageUrl = `https://haitibiznis.com/event.html?id=${event._id}`;
+    res.send(`<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<meta property="og:title" content="${emoji} ${title.replace(/"/g, '&quot;')} — Tikè Lakay">
+<meta property="og:description" content="${desc.replace(/"/g, '&quot;')}">
+<meta property="og:url" content="${pageUrl}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Tikè Lakay | HaitiBiznis">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="${emoji} ${title.replace(/"/g, '&quot;')}">
+<meta name="twitter:description" content="${desc.replace(/"/g, '&quot;')}">
+<meta http-equiv="refresh" content="0;url=${pageUrl}">
+<title>${title} — Tikè Lakay</title>
+</head><body><p>Redirection...</p><script>window.location.href="${pageUrl}";</script></body></html>`);
+  } catch (err) {
+    res.redirect('https://haitibiznis.com/events.html');
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const event = await Event.findById(req.params.id);
