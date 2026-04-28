@@ -24,17 +24,22 @@ router.post('/request', async (req, res) => {
             dropoffAddress, dropoffLat, dropoffLng, scheduledDate, scheduledTime,
             eventId, ticketRef, notes, distance } = req.body;
 
-    if (!riderName || !riderPhone || !vehicleType || !pickupAddress || !dropoffAddress || !scheduledDate || !scheduledTime) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!riderPhone || !vehicleType || !pickupAddress || !dropoffAddress) {
+      return res.status(400).json({ error: 'Missing required fields: riderPhone, vehicleType, pickupAddress, dropoffAddress' });
     }
 
     const fare = estimateFare(vehicleType, distance);
 
+    const isNow = !scheduledDate && !scheduledTime;
+    const now = new Date();
     const ride = new Ride({
-      riderName, riderPhone, vehicleType,
+      riderName: riderName || '',
+      riderPhone, vehicleType,
       pickupAddress, pickupLat, pickupLng,
       dropoffAddress, dropoffLat, dropoffLng,
-      scheduledDate, scheduledTime,
+      scheduledDate: scheduledDate || now.toISOString().split('T')[0],
+      scheduledTime: scheduledTime || now.toTimeString().slice(0, 5),
+      isNow,
       event: eventId || undefined,
       ticketRef: ticketRef || '',
       notes: notes || '',

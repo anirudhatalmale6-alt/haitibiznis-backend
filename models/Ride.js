@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const rideSchema = new mongoose.Schema({
-  riderName: { type: String, required: true },
+  riderName: { type: String, default: '' },
   riderPhone: { type: String, required: true },
   vehicleType: { type: String, enum: ['car', 'moto'], required: true },
   pickupAddress: { type: String, required: true },
@@ -10,8 +10,9 @@ const rideSchema = new mongoose.Schema({
   dropoffAddress: { type: String, required: true },
   dropoffLat: Number,
   dropoffLng: Number,
-  scheduledDate: { type: String, required: true },
-  scheduledTime: { type: String, required: true },
+  scheduledDate: String,
+  scheduledTime: String,
+  isNow: { type: Boolean, default: false },
   event: { type: mongoose.Schema.Types.ObjectId, ref: 'Event' },
   ticketRef: String,
   driver: { type: mongoose.Schema.Types.ObjectId, ref: 'Driver' },
