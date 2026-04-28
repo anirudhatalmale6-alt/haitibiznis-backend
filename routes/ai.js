@@ -53,21 +53,12 @@ Rules:
 - Extract phone numbers exactly as shown
 - Keep the title in the original language (French, Kreyol, or English)`;
 
-/* ═══ OCR FALLBACK (Tesseract) ═══ */
-const { execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+/* ═══ OCR FALLBACK (tesseract.js) ═══ */
+const Tesseract = require('tesseract.js');
 
-function ocrExtract(buffer) {
-  const tmpFile = path.join(os.tmpdir(), 'flyer_' + Date.now() + '.jpg');
-  fs.writeFileSync(tmpFile, buffer);
-  try {
-    const text = execSync(`tesseract "${tmpFile}" stdout -l fra+eng 2>/dev/null`, { timeout: 30000 }).toString();
-    return text;
-  } finally {
-    try { fs.unlinkSync(tmpFile); } catch(e) {}
-  }
+async function ocrExtract(buffer) {
+  const { data: { text } } = await Tesseract.recognize(buffer, 'fra+eng', { logger: () => {} });
+  return text;
 }
 
 function parseOcrText(text) {
@@ -240,15 +231,10 @@ router.post('/scan-flyer', upload.single('flyer'), async (req, res) => {
         return res.status(422).json({ error: 'Could not parse AI response', raw: text });
       }
     } else {
-      try {
-        execSync('which tesseract', { stdio: 'ignore' });
-        console.log('Using OCR fallback (no API key)');
-        const ocrText = ocrExtract(req.file.buffer);
-        console.log('OCR text:', ocrText.substring(0, 500));
-        extracted = parseOcrText(ocrText);
-      } catch (noTess) {
-        return res.status(503).json({ error: 'AI service not configured. Set ANTHROPIC_API_KEY environment variable.' });
-      }
+      console.log('Using tesseract.js OCR fallback (no API key)');
+      const ocrText = await ocrExtract(req.file.buffer);
+      console.log('OCR text:', ocrText.substring(0, 500));
+      extracted = parseOcrText(ocrText);
     }
 
     const evType = extracted.type || 'lòt';
