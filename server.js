@@ -27,7 +27,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' });
+  res.json({ status: 'ok', db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected', ai: process.env.ANTHROPIC_API_KEY ? 'configured' : 'not configured' });
 });
 
 const MONGO_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/haitibiznis';
