@@ -240,11 +240,15 @@ router.post('/scan-flyer', upload.single('flyer'), async (req, res) => {
         return res.status(422).json({ error: 'Could not parse AI response', raw: text });
       }
     } else {
-      // OCR Fallback (Tesseract)
-      console.log('Using OCR fallback (no API key)');
-      const ocrText = ocrExtract(req.file.buffer);
-      console.log('OCR text:', ocrText.substring(0, 500));
-      extracted = parseOcrText(ocrText);
+      try {
+        execSync('which tesseract', { stdio: 'ignore' });
+        console.log('Using OCR fallback (no API key)');
+        const ocrText = ocrExtract(req.file.buffer);
+        console.log('OCR text:', ocrText.substring(0, 500));
+        extracted = parseOcrText(ocrText);
+      } catch (noTess) {
+        return res.status(503).json({ error: 'AI service not configured. Set ANTHROPIC_API_KEY environment variable.' });
+      }
     }
 
     const evType = extracted.type || 'lòt';
