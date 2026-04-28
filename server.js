@@ -21,6 +21,7 @@ app.use(express.json({ limit: '15mb' }));
 
 app.use('/api/events', require('./routes/events'));
 app.use('/api/ai', require('./routes/ai'));
+app.use('/api/payments', require('./routes/payments'));
 
 app.get('/', (req, res) => {
   res.json({ service: 'HaitiBiznis API', version: '1.0.0', status: 'running' });

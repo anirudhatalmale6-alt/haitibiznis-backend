@@ -13,3 +13,7 @@ services:
         sync: false
       - key: NODE_ENV
         value: production
+      - key: SOLUTIONIP_URL
+        value: https://plopplop.solutionip.app
+      - key: SOLUTIONIP_CLIENT_ID
+        value: pp_1ohu5zz2tcx
