@@ -57,6 +57,7 @@ router.post('/buy-ticket', async (req, res) => {
     });
     await txn.save();
 
+    const returnUrl = `https://haitibiznis.com/ticket.html?ref=${refId}`;
     const sipRes = await fetch(SIP_URL + '/api/paiement-marchand', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -64,7 +65,8 @@ router.post('/buy-ticket', async (req, res) => {
         client_id: SIP_CLIENT,
         refference_id: refId,
         montant: total,
-        payment_method: paymentMethod
+        payment_method: paymentMethod,
+        return_url: returnUrl
       })
     });
     const sipData = await sipRes.json();
@@ -177,9 +179,23 @@ async function handleWebhook(req, res) {
 
 router.get('/ticket/:referenceId', async (req, res) => {
   try {
-    const txn = await Transaction.findOne({ referenceId: req.params.referenceId }).populate('event', 'title date startTime endTime location typeEmoji');
+    const txn = await Transaction.findOne({ referenceId: req.params.referenceId }).populate('event', 'title date startTime endTime location typeEmoji typeLabel gradient');
     if (!txn) return res.status(404).json({ error: 'Ticket not found' });
     res.json(txn);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const QRCode = require('qrcode');
+
+router.get('/ticket/:referenceId/qr', async (req, res) => {
+  try {
+    const txn = await Transaction.findOne({ referenceId: req.params.referenceId });
+    if (!txn) return res.status(404).json({ error: 'Ticket not found' });
+    const verifyUrl = `https://haitibiznis-api.onrender.com/api/payments/verify?referenceId=${txn.referenceId}`;
+    const qrDataUrl = await QRCode.toDataURL(verifyUrl, { width: 300, margin: 2, color: { dark: '#0A0E1A', light: '#FFFFFF' } });
+    res.json({ qr: qrDataUrl, referenceId: txn.referenceId, status: txn.status });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
