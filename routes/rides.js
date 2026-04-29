@@ -150,7 +150,7 @@ router.post('/rate/:id', async (req, res) => {
 router.post('/driver/register', async (req, res) => {
   try {
     const { firstName, lastName, phone, email, vehicleType, vehicleMake,
-            vehicleModel, vehicleColor, licensePlate, photoUrl, licensePhotoUrl, zone } = req.body;
+            vehicleModel, vehicleColor, vehicleYear, licensePlate, photoUrl, licensePhotoUrl, zone } = req.body;
 
     if (!firstName || !lastName || !phone || !vehicleType || !licensePlate) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -162,7 +162,7 @@ router.post('/driver/register', async (req, res) => {
     const pin = Math.floor(1000 + Math.random() * 9000).toString();
     const driver = new Driver({
       firstName, lastName, phone, email,
-      vehicleType, vehicleMake, vehicleModel, vehicleColor,
+      vehicleType, vehicleMake, vehicleModel, vehicleColor, vehicleYear,
       licensePlate, photoUrl, licensePhotoUrl, zone, pin
     });
     await driver.save();
