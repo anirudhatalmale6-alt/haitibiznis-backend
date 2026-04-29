@@ -29,6 +29,8 @@ const rideSchema = new mongoose.Schema({
   driverRating: Number,
   cancelledBy: String,
   cancelReason: String,
+  refundStatus: { type: String, enum: ['none', 'requested', 'approved', 'denied', 'processed'], default: 'none' },
+  refundAmount: { type: Number, default: 0 },
   acceptedAt: Date,
   startedAt: Date,
   completedAt: Date,

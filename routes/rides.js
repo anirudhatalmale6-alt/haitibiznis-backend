@@ -3,6 +3,7 @@ const router = express.Router();
 const Ride = require('../models/Ride');
 const Driver = require('../models/Driver');
 const Event = require('../models/Event');
+const Refund = require('../models/Refund');
 
 const FARE_PER_KM_CAR = 75;
 const FARE_PER_KM_MOTO = 40;
@@ -350,6 +351,157 @@ router.post('/driver/verify/:driverId', async (req, res) => {
     driver.verified = true;
     await driver.save();
     res.json({ success: true, message: 'Driver verified' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════
+// REFUND ENDPOINTS
+// ═══════════════════════════════════════
+
+router.post('/refund/request', async (req, res) => {
+  try {
+    const { rideId, riderPhone, reason, reasonText, percentCompleted } = req.body;
+    if (!rideId || !riderPhone || !reason) {
+      return res.status(400).json({ error: 'Missing required fields: rideId, riderPhone, reason' });
+    }
+
+    const ride = await Ride.findById(rideId);
+    if (!ride) return res.status(404).json({ error: 'Ride not found' });
+    if (ride.riderPhone !== riderPhone) return res.status(403).json({ error: 'Not your ride' });
+    if (ride.refundStatus !== 'none') return res.status(400).json({ error: 'Refund already requested for this ride' });
+
+    const rideAmount = ride.fare || ride.estimatedFare || 0;
+    const pct = percentCompleted || 0;
+    let refundAmount = rideAmount;
+    let refundType = 'full';
+
+    if (['breakdown', 'driver_cancelled', 'no_driver'].includes(reason)) {
+      if (pct > 0 && pct < 100) {
+        refundAmount = Math.round(rideAmount * ((100 - pct) / 100));
+        refundType = 'partial';
+      }
+    }
+
+    const refund = new Refund({
+      ride: rideId,
+      riderPhone,
+      driver: ride.driver,
+      reason,
+      reasonText: reasonText || '',
+      rideAmount,
+      refundAmount,
+      refundType,
+      percentCompleted: pct
+    });
+    await refund.save();
+
+    ride.refundStatus = 'requested';
+    await ride.save();
+
+    res.json({ success: true, refund });
+  } catch (err) {
+    console.error('Refund request error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/refund/my-requests', async (req, res) => {
+  try {
+    const { phone } = req.query;
+    if (!phone) return res.status(400).json({ error: 'Phone required' });
+    const refunds = await Refund.find({ riderPhone: phone })
+      .populate('ride', 'pickupAddress dropoffAddress fare estimatedFare scheduledDate status')
+      .populate('driver', 'firstName lastName phone')
+      .sort({ createdAt: -1 }).limit(20);
+    res.json(refunds);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/refund/requests', async (req, res) => {
+  try {
+    const { status } = req.query;
+    const filter = {};
+    if (status) filter.status = status;
+    const refunds = await Refund.find(filter)
+      .populate('ride', 'pickupAddress dropoffAddress fare estimatedFare scheduledDate status vehicleType riderName riderPhone')
+      .populate('driver', 'firstName lastName phone vehicleType licensePlate')
+      .sort({ createdAt: -1 }).limit(50);
+    res.json(refunds);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/refund/process/:id', async (req, res) => {
+  try {
+    const { action, refundAmount, adminNote } = req.body;
+    if (!['approve', 'deny'].includes(action)) {
+      return res.status(400).json({ error: 'Action must be approve or deny' });
+    }
+
+    const refund = await Refund.findById(req.params.id);
+    if (!refund) return res.status(404).json({ error: 'Refund request not found' });
+    if (refund.status !== 'pending') return res.status(400).json({ error: 'Refund already processed' });
+
+    const ride = await Ride.findById(refund.ride);
+
+    if (action === 'approve') {
+      refund.status = 'approved';
+      refund.refundAmount = refundAmount || refund.refundAmount;
+      refund.processedAt = new Date();
+      if (adminNote) refund.adminNote = adminNote;
+
+      if (ride) {
+        ride.refundStatus = 'approved';
+        ride.refundAmount = refund.refundAmount;
+        await ride.save();
+      }
+
+      if (refund.driver) {
+        const driver = await Driver.findById(refund.driver);
+        if (driver && ride) {
+          const driverShare = Math.round(refund.refundAmount * (1 - PLATFORM_FEE_PCT));
+          driver.totalEarnings = Math.max(0, driver.totalEarnings - driverShare);
+          await driver.save();
+        }
+      }
+    } else {
+      refund.status = 'denied';
+      if (adminNote) refund.adminNote = adminNote;
+      refund.processedAt = new Date();
+
+      if (ride) {
+        ride.refundStatus = 'denied';
+        await ride.save();
+      }
+    }
+
+    await refund.save();
+    res.json({ success: true, refund });
+  } catch (err) {
+    console.error('Refund process error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/refund/stats', async (req, res) => {
+  try {
+    const total = await Refund.countDocuments();
+    const pending = await Refund.countDocuments({ status: 'pending' });
+    const approved = await Refund.countDocuments({ status: 'approved' });
+    const denied = await Refund.countDocuments({ status: 'denied' });
+    const totalRefunded = await Refund.aggregate([
+      { $match: { status: 'approved' } },
+      { $group: { _id: null, total: { $sum: '$refundAmount' } } }
+    ]);
+    res.json({
+      total, pending, approved, denied,
+      totalRefunded: totalRefunded[0]?.total || 0
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
