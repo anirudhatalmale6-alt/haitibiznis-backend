@@ -13,6 +13,8 @@ services:
         sync: false
       - key: NODE_ENV
         value: production
+      - key: API_URL
+        value: https://haitibiznis-api.onrender.com
       - key: SOLUTIONIP_URL
         value: https://plopplop.solutionip.app
       - key: SOLUTIONIP_CLIENT_ID

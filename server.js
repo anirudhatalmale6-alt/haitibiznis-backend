@@ -39,7 +39,16 @@ const PORT = process.env.PORT || 3000;
 mongoose.connect(MONGO_URI)
   .then(() => {
     console.log('MongoDB connected');
-    app.listen(PORT, () => console.log(`HaitiBiznis API running on port ${PORT}`));
+    app.listen(PORT, () => {
+      console.log(`HaitiBiznis API running on port ${PORT}`);
+      const extUrl = process.env.RENDER_EXTERNAL_URL || process.env.API_URL;
+      if (extUrl) {
+        setInterval(() => {
+          fetch(`${extUrl}/health`).catch(() => {});
+        }, 14 * 60 * 1000);
+        console.log('Keep-alive ping enabled');
+      }
+    });
   })
   .catch(err => {
     console.error('MongoDB connection error:', err.message);
