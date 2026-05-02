@@ -27,7 +27,7 @@ app.use('/api/whatsapp', require('./routes/whatsapp'));
 app.use('/api/admin', require('./routes/admin'));
 
 app.get('/', (req, res) => {
-  res.json({ service: 'HaitiBiznis API', version: '1.0.0', status: 'running' });
+  res.json({ service: 'HaitiBiznis API', version: '2.0.0', status: 'running', admin: true });
 });
 
 app.get('/health', (req, res) => {
