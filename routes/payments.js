@@ -3,6 +3,8 @@ const router = express.Router();
 const Transaction = require('../models/Transaction');
 const Event = require('../models/Event');
 
+const { notifyAdmin } = require('../utils/notify');
+
 const SIP_URL = process.env.SOLUTIONIP_URL || 'https://plopplop.solutionip.app';
 const SIP_CLIENT = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
 const PLATFORM_FEE_PCT = 0.05;
@@ -45,6 +47,10 @@ router.post('/buy-ticket', async (req, res) => {
       await txn.save();
       ticket.sold = (ticket.sold || 0) + quantity;
       await event.save();
+      notifyAdmin('ticket', {
+        name: buyerName, phone: buyerPhone, event: event.title,
+        ticket: ticketName, qty: quantity, ref: refId
+      }).catch(() => {});
       return res.json({ success: true, free: true, referenceId: refId, ticketName, qty: quantity });
     }
 

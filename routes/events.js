@@ -1,11 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const Event = require('../models/Event');
+const { notifyAdmin } = require('../utils/notify');
 
 router.post('/', async (req, res) => {
   try {
     const event = new Event(req.body);
     await event.save();
+    notifyAdmin('event', {
+      title: event.title, date: event.date, location: event.location
+    }).catch(() => {});
     res.status(201).json(event);
   } catch (err) {
     res.status(400).json({ error: err.message });

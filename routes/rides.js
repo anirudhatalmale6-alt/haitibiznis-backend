@@ -5,6 +5,8 @@ const Driver = require('../models/Driver');
 const Event = require('../models/Event');
 const Refund = require('../models/Refund');
 
+const { notifyAdmin } = require('../utils/notify');
+
 const FARE_PER_KM_CAR = 75;
 const FARE_PER_KM_MOTO = 40;
 const BASE_FARE_CAR = 150;
@@ -48,6 +50,11 @@ router.post('/request', async (req, res) => {
       estimatedFare: fare.total
     });
     await ride.save();
+
+    notifyAdmin('ride', {
+      name: riderName, phone: riderPhone, vehicleType,
+      pickup: pickupAddress, dropoff: dropoffAddress, fare: fare.total
+    }).catch(() => {});
 
     res.json({
       success: true, ride: ride._id,
@@ -167,6 +174,11 @@ router.post('/driver/register', async (req, res) => {
       licensePlate, photoUrl, licensePhotoUrl, zone, pin
     });
     await driver.save();
+
+    notifyAdmin('driver', {
+      name: firstName + ' ' + lastName, phone, vehicleType,
+      plate: licensePlate, zone
+    }).catch(() => {});
 
     res.json({ success: true, driverId: driver._id, pin, message: 'Registration submitted. Pending verification.' });
   } catch (err) {
