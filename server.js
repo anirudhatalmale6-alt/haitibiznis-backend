@@ -24,6 +24,7 @@ app.use('/api/ai', require('./routes/ai'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/rides', require('./routes/rides'));
 app.use('/api/whatsapp', require('./routes/whatsapp'));
+app.use('/api/admin', require('./routes/admin'));
 
 app.get('/', (req, res) => {
   res.json({ service: 'HaitiBiznis API', version: '1.0.0', status: 'running' });
