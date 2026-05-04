@@ -4,7 +4,8 @@ const Order = require('../models/Order');
 
 const SIP_URL = process.env.SOLUTIONIP_URL || 'https://plopplop.solutionip.app';
 const SIP_CLIENT = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
-const PLATFORM_FEE_PCT = 0.05;
+const PLATFORM_FEE_PCT = 0.20;
+const DRIVER_PCT = 0.80;
 const PERISHABLE_HOLD_HOURS = 4;
 const REGULAR_HOLD_HOURS = 24;
 
@@ -288,9 +289,9 @@ router.post('/:ref/release', async (req, res) => {
     const order = await Order.findOne({ referenceId: req.params.ref });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    order.sellerPayout = order.subtotal - order.platformFee;
-    order.driverPayout = order.deliveryFee;
-    order.platformEarnings = order.platformFee;
+    order.sellerPayout = order.subtotal;
+    order.driverPayout = Math.round(order.deliveryFee * DRIVER_PCT);
+    order.platformEarnings = order.platformFee + (order.deliveryFee - order.driverPayout);
     order.payoutStatus = 'released';
     order.status = 'funds_released';
     order.releaseAt = new Date();
@@ -335,9 +336,9 @@ router.post('/auto-release', async (req, res) => {
 
     let released = 0;
     for (const order of orders) {
-      order.sellerPayout = order.subtotal - order.platformFee;
-      order.driverPayout = order.deliveryFee;
-      order.platformEarnings = order.platformFee;
+      order.sellerPayout = order.subtotal;
+      order.driverPayout = Math.round(order.deliveryFee * DRIVER_PCT);
+      order.platformEarnings = order.platformFee + (order.deliveryFee - order.driverPayout);
       order.payoutStatus = 'released';
       order.status = 'funds_released';
       order.releaseAt = now;
