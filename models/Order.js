@@ -65,11 +65,10 @@ const orderSchema = new mongoose.Schema({
   }]
 }, { timestamps: true });
 
-orderSchema.pre('save', function(next) {
+orderSchema.pre('save', function() {
   if (this.isModified('status')) {
     this.statusHistory.push({ status: this.status, at: new Date() });
   }
-  next();
 });
 
 module.exports = mongoose.model('Order', orderSchema);
