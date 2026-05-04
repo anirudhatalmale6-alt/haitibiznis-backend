@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const Order = require('../models/Order');
-const axios = require('axios');
 
 const SIP_URL = process.env.SOLUTIONIP_URL || 'https://plopplop.solutionip.app';
 const SIP_CLIENT = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
@@ -51,16 +50,21 @@ router.post('/create', async (req, res) => {
 
     // Call SolutionIP for payment
     const returnUrl = `https://myplopplop.com/order-status.html?ref=${referenceId}`;
-    const sipRes = await axios.post(`${SIP_URL}/api/paiement-marchand`, {
-      client_id: SIP_CLIENT,
-      refference_id: referenceId,
-      montant: totalAmount,
-      payment_method: paymentMethod,
-      return_url: returnUrl
+    const sipRes = await fetch(`${SIP_URL}/api/paiement-marchand`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: SIP_CLIENT,
+        refference_id: referenceId,
+        montant: totalAmount,
+        payment_method: paymentMethod,
+        return_url: returnUrl
+      })
     });
+    const sipData = await sipRes.json();
 
-    order.sipTransactionId = sipRes.data.transaction_id || sipRes.data.id;
-    order.paymentUrl = sipRes.data.url || sipRes.data.payment_url;
+    order.sipTransactionId = sipData.transaction_id || sipData.id;
+    order.paymentUrl = sipData.url || sipData.payment_url;
     await order.save();
 
     res.json({
@@ -109,10 +113,9 @@ router.get('/verify', async (req, res) => {
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
     if (order.status === 'pending_payment' && order.sipTransactionId) {
-      const sipRes = await axios.get(`${SIP_URL}/api/paiement-verify`, {
-        params: { client_id: SIP_CLIENT, order_id: order.sipTransactionId }
-      });
-      if (sipRes.data.status === 'completed' || sipRes.data.status === 'success') {
+      const sipRes = await fetch(`${SIP_URL}/api/paiement-verify?client_id=${SIP_CLIENT}&order_id=${order.sipTransactionId}`);
+      const sipData = await sipRes.json();
+      if (sipData.status === 'completed' || sipData.status === 'success') {
         order.status = 'paid';
         order.paidAt = new Date();
         await order.save();
