@@ -375,6 +375,81 @@ router.get('/search', async (req, res) => {
 
 // ===== ADMIN ROUTES =====
 const ADMIN_PIN = process.env.ADMIN_PIN || 'hb2026admin';
+
+// POST /api/verify/admin/migrate-drivers — Import existing drivers into verified system
+router.post('/admin/migrate-drivers', async (req, res) => {
+  const pin = req.headers['x-admin-pin'] || req.query.pin;
+  if (pin !== ADMIN_PIN) return res.status(403).json({ error: 'Invalid PIN' });
+
+  try {
+    const drivers = await Driver.find({});
+    let migrated = 0, skipped = 0, errors = 0;
+    const results = [];
+
+    for (const d of drivers) {
+      const existing = await VerifiedProfile.findOne({ phone: d.phone });
+      if (existing) {
+        if (!existing.linkedDriverId) {
+          existing.linkedDriverId = d._id;
+          existing.totalTrips = Math.max(existing.totalTrips, d.totalRides || 0);
+          if (d.rating && d.rating > 0) existing.rating = d.rating;
+          existing.computeTrustScore();
+          await existing.save();
+        }
+        skipped++;
+        results.push({ phone: d.phone, name: d.firstName + ' ' + d.lastName, action: 'already_exists' });
+        continue;
+      }
+
+      try {
+        let qrCode = genQR();
+        while (await VerifiedProfile.findOne({ qrCode })) qrCode = genQR();
+
+        const profile = await VerifiedProfile.create({
+          phone: d.phone,
+          email: d.email,
+          firstName: d.firstName,
+          lastName: d.lastName,
+          displayName: d.firstName + ' ' + d.lastName,
+          profileType: 'driver',
+          status: d.verified ? 'verified' : 'pending',
+          photoUrl: d.photoUrl || undefined,
+          driverLicenseUrl: d.licensePhotoUrl || undefined,
+          phoneVerified: true,
+          qrCode,
+          platforms: ['msouwout'],
+          linkedDriverId: d._id,
+          rating: d.rating || 0,
+          totalRatings: 0,
+          totalTrips: d.totalRides || 0,
+          verifiedAt: d.verified ? new Date() : undefined,
+          verifiedBy: d.verified ? 'migration' : undefined,
+          vehicleDocs: d.licensePlate && d.licensePlate !== 'PENDING' ? [{ type: 'plate', label: d.licensePlate }] : [],
+          statusHistory: [{ status: d.verified ? 'verified' : 'pending', by: 'migration', note: 'Migrated from MsouWout driver registration' }]
+        });
+
+        profile.computeTrustScore();
+        await profile.save();
+
+        migrated++;
+        results.push({ phone: d.phone, name: d.firstName + ' ' + d.lastName, qrCode, action: 'migrated', status: profile.status });
+      } catch (err) {
+        errors++;
+        results.push({ phone: d.phone, name: d.firstName + ' ' + d.lastName, action: 'error', error: err.message });
+      }
+    }
+
+    res.json({
+      message: 'Migrasyon fini',
+      total_drivers: drivers.length,
+      migrated, skipped, errors,
+      results
+    });
+  } catch (err) {
+    console.error('Migration error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
 function requirePin(req, res, next) {
   const pin = req.headers['x-admin-pin'] || req.query.pin;
   if (pin !== ADMIN_PIN) return res.status(403).json({ error: 'Invalid PIN' });
