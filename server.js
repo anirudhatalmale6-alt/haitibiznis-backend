@@ -29,7 +29,7 @@ app.use('/api/orders', require('./routes/orders'));
 app.use('/api/verify', require('./routes/verify'));
 
 app.get('/', (req, res) => {
-  res.json({ service: 'HaitiBiznis API', version: '3.0.0', status: 'running', admin: true, verified: true });
+  res.json({ service: 'HaitiBiznis API', version: '3.0.1', status: 'running', admin: true, verified: true });
 });
 
 app.get('/health', (req, res) => {
