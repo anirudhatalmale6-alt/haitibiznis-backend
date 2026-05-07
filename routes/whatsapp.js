@@ -378,7 +378,7 @@ async function completeDriverSignup(phone, session) {
 
 function sendKoutyeStep1(phone) {
   return sendMessage(phone,
-    `Ou vle fè lajan ak MsouWout san ou pa gen machin? 💰\n\nVin yon Koutye (Broker)!\nRekòmande MsouWout bay lòt moun epi touche 10% sou chak kous.\n\nPou kòmanse, ki non ou?`
+    `Ou vle fè lajan ak MsouWout san ou pa gen machin? 💰\n\nVin yon Parenaj Biznis (Broker)!\nRekòmande MsouWout bay lòt moun epi touche 10% sou chak kous.\n\nPou kòmanse, ki non ou?`
   );
 }
 
@@ -398,7 +398,7 @@ async function handleKoutyeFlow(phone, session, text, contactName) {
       await resetSession(session);
 
       return sendMessage(phone,
-        `✅ Ou enskri kòm Koutye MsouWout!\n\nMen kòd referans ou: ${code}\nChak fwa yon moun itilize kòd sa a, ou touche 10%!\n\nPataje mesaj sa a:\n"Bezwen kous? Ekri 'Kous' sou WhatsApp ${WHATSAPP_NUMBER} epi mete kòd ${code}"\n\nPlis moun ou rekòmande = Plis lajan ou touche! 💰`
+        `✅ Ou enskri kòm Parenaj Biznis MsouWout!\n\nMen kòd referans ou: ${code}\nChak fwa yon moun itilize kòd sa a, ou touche 10%!\n\nPataje mesaj sa a:\n"Bezwen kous? Ekri 'Kous' sou WhatsApp ${WHATSAPP_NUMBER} epi mete kòd ${code}"\n\nPlis moun ou rekòmande = Plis lajan ou touche! 💰`
       );
     }
   }
