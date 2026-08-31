@@ -6,15 +6,30 @@ const Transaction = require('../models/Transaction');
 const Refund = require('../models/Refund');
 const Event = require('../models/Event');
 
-const ADMIN_PIN = process.env.ADMIN_PIN || 'hb2026admin';
-
-function requirePin(req, res, next) {
-  const pin = req.headers['x-admin-pin'] || req.query.pin;
-  if (pin !== ADMIN_PIN) return res.status(403).json({ error: 'Invalid PIN' });
-  next();
-}
+const { requirePin, isCustom, setConsolePin } = require('../utils/consolePin');
 
 router.use(requirePin);
+
+/* Has he replaced the bootstrap code yet? The console nags until he has. */
+router.get('/pin-state', async (req, res) => {
+  try {
+    res.json({ success: true, custom: await isCustom() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* Set your own console code. requirePin above already proved the caller holds
+   the code currently in force, so there is nothing more to check here. The
+   console sends this to both APIs, because one code opens both. */
+router.post('/change-pin', async (req, res) => {
+  try {
+    await setConsolePin(req.body && req.body.newPin);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
 
 router.get('/dashboard', async (req, res) => {
   try {

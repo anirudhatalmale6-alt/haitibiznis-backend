@@ -374,13 +374,11 @@ router.get('/search', async (req, res) => {
 });
 
 // ===== ADMIN ROUTES =====
-const ADMIN_PIN = process.env.ADMIN_PIN || 'hb2026admin';
+// The console code is no longer a literal here — see utils/consolePin.js.
+const { requirePin } = require('../utils/consolePin');
 
 // POST /api/verify/admin/migrate-drivers — Import existing drivers into verified system
-router.post('/admin/migrate-drivers', async (req, res) => {
-  const pin = req.headers['x-admin-pin'] || req.query.pin;
-  if (pin !== ADMIN_PIN) return res.status(403).json({ error: 'Invalid PIN' });
-
+router.post('/admin/migrate-drivers', requirePin, async (req, res) => {
   try {
     const drivers = await Driver.find({});
     let migrated = 0, skipped = 0, errors = 0;
@@ -450,12 +448,6 @@ router.post('/admin/migrate-drivers', async (req, res) => {
     res.status(500).json({ error: 'Erè sèvè' });
   }
 });
-function requirePin(req, res, next) {
-  const pin = req.headers['x-admin-pin'] || req.query.pin;
-  if (pin !== ADMIN_PIN) return res.status(403).json({ error: 'Invalid PIN' });
-  next();
-}
-
 // GET /api/verify/admin/pending — List pending verifications
 router.get('/admin/pending', requirePin, async (req, res) => {
   try {
