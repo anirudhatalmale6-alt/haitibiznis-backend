@@ -19,6 +19,13 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '15mb' }));
 
+// Escrow release, refunds, driver approval, editing or deleting somebody
+// else's event. See middleware/adminOnly.js for the list and for what was
+// deliberately left public. Mounted BEFORE the routers so a route added later
+// cannot quietly miss it.
+const { adminOnly } = require('./middleware/adminOnly');
+app.use(adminOnly);
+
 app.use('/api/events', require('./routes/events'));
 app.use('/api/ai', require('./routes/ai'));
 app.use('/api/payments', require('./routes/payments'));
