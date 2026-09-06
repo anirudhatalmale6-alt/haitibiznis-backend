@@ -41,10 +41,18 @@ async function askGateway(referenceId) {
 /* true only when the gateway itself confirms the money arrived.
  * Anything else - not found, still pending, network down, a reply we do not
  * recognise - is false, and the caller must leave the order or ticket alone.
- * Failing closed costs a buyer a few minutes; failing open gives away goods. */
+ * Failing closed costs a buyer a few minutes; failing open gives away goods.
+ *
+ * 🚨 The two fields mean different things and it is easy to get wrong.
+ * `status` is whether the LOOKUP worked. `trans_status` is whether the MONEY
+ * arrived. Asked about the four real Tike Lakay references, the live gateway
+ * answered status:true for all four, and trans_status "ok" for exactly one -
+ * the other three were started and abandoned. So reading `status` as payment,
+ * or accepting either field, marks every abandoned checkout as paid.
+ * Only trans_status === 'ok' is a payment. */
 function isConfirmed(data) {
   if (!data || typeof data !== 'object') return false;
-  return data.trans_status === 'ok' || data.status === true;
+  return data.trans_status === 'ok';
 }
 
 /* Convenience for the callers that only want a yes/no and want a refusal
