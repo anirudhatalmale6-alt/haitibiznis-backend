@@ -4,6 +4,7 @@ const Transaction = require('../models/Transaction');
 const Event = require('../models/Event');
 
 const { notifyAdmin } = require('../utils/notify');
+const { paymentConfirmed, isConfirmed, askGateway } = require('../utils/verifyPayment');
 
 const SIP_URL = process.env.SOLUTIONIP_URL || 'https://plopplop.solutionip.app';
 const SIP_CLIENT = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
@@ -152,31 +153,42 @@ router.post('/webhook/moncash', handleWebhook);
 router.post('/webhook/natcash', handleWebhook);
 router.post('/webhook/card', handleWebhook);
 
+// This used to read "status" straight out of the POST body: anybody could
+// POST {reference_id, status:"completed"} with no credential and walk out with
+// a paid ticket. The reference is printed on the buyer's own ticket page
+// (ticket.html?ref=...), so it was never a secret. The body is now only a
+// nudge to go and ask the gateway; the gateway decides.
 async function handleWebhook(req, res) {
   try {
     const ref = req.body.reference_id || req.body.refference_id || req.body.orderId;
-    const status = req.body.status;
     if (!ref) return res.status(400).json({ error: 'Missing reference' });
 
     const txn = await Transaction.findOne({ referenceId: ref });
     if (!txn) return res.status(404).json({ error: 'Transaction not found' });
+    if (txn.status === 'completed') return res.json({ received: true, alreadyPaid: true });
 
-    if ((status === 'completed' || status === 'success') && txn.status !== 'completed') {
-      txn.status = 'completed';
-      txn.paidAt = new Date();
-      await txn.save();
+    const { confirmed } = await paymentConfirmed(ref, 'ticket webhook');
+    if (!confirmed) {
+      // A real gateway retry must not get a 500, but nothing is issued.
+      console.error('ticket webhook: ' + ref + ' was announced as paid but the ' +
+        'gateway does not confirm it. Ticket left at "' + txn.status + '".');
+      return res.json({ received: true, paid: false });
+    }
 
-      const event = await Event.findById(txn.event);
-      if (event) {
-        const ticket = event.tickets.find(t => t.name === txn.ticketName);
-        if (ticket) {
-          ticket.sold = (ticket.sold || 0) + txn.qty;
-          await event.save();
-        }
+    txn.status = 'completed';
+    txn.paidAt = new Date();
+    await txn.save();
+
+    const event = await Event.findById(txn.event);
+    if (event) {
+      const ticket = event.tickets.find(t => t.name === txn.ticketName);
+      if (ticket) {
+        ticket.sold = (ticket.sold || 0) + txn.qty;
+        await event.save();
       }
     }
 
-    res.json({ received: true });
+    res.json({ received: true, paid: true });
   } catch (err) {
     console.error('Webhook error:', err.message);
     res.status(500).json({ error: err.message });

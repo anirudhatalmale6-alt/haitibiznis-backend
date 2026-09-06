@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Order = require('../models/Order');
+const { paymentConfirmed } = require('../utils/verifyPayment');
 
 const SIP_URL = process.env.SOLUTIONIP_URL || 'https://plopplop.solutionip.app';
 const SIP_CLIENT = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
@@ -84,22 +85,36 @@ router.post('/create', async (req, res) => {
   }
 });
 
-// Payment webhook from SolutionIP
+// Payment webhook from SolutionIP.
+//
+// This used to read "status" out of the POST body and mark the order paid.
+// Anybody could POST {refference_id, status:"completed"} with no credential -
+// and the reference is printed on the buyer's own confirmation screen - which
+// marked the order paid and made it releasable to the seller out of escrow.
+// The body is now only a nudge to go and ask the gateway.
 router.post('/webhook/:method', async (req, res) => {
   try {
-    const { refference_id, status } = req.body;
+    const { refference_id } = req.body;
     if (!refference_id) return res.status(400).json({ error: 'Missing reference' });
 
     const order = await Order.findOne({ referenceId: refference_id });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    if (status === 'completed' || status === 'success') {
+    if (order.status === 'paid') return res.json({ received: true, alreadyPaid: true });
+
+    const { confirmed } = await paymentConfirmed(refference_id, 'order webhook');
+    if (confirmed) {
       order.status = 'paid';
       order.paidAt = new Date();
       await order.save();
+    } else {
+      // Not an error to the caller - a real gateway retry should not be met
+      // with a 500 - but nothing moves, and it is written down.
+      console.error('order webhook: ' + refference_id + ' was announced as paid ' +
+        'but the gateway does not confirm it. Order left at "' + order.status + '".');
     }
 
-    res.json({ received: true });
+    res.json({ received: true, paid: confirmed });
   } catch (err) {
     console.error('Order webhook error:', err.message);
     res.status(500).json({ error: 'Webhook error' });
@@ -113,10 +128,18 @@ router.get('/verify', async (req, res) => {
     const order = await Order.findOne({ referenceId: ref });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    if (order.status === 'pending_payment' && order.sipTransactionId) {
-      const sipRes = await fetch(`${SIP_URL}/api/paiement-verify?client_id=${SIP_CLIENT}&order_id=${order.sipTransactionId}`);
-      const sipData = await sipRes.json();
-      if (sipData.status === 'completed' || sipData.status === 'success') {
+    // This is the buyer's own way back from the payment page, and it was
+    // calling a URL that does not exist: a GET with order_id. The gateway
+    // answers that with HTTP 200 and an HTML page, so .json() threw and every
+    // single call returned 500. In other words the safe path to "paid" had
+    // never worked, and the only thing that could mark an order paid was the
+    // webhook above, which believed anybody. Both are fixed together.
+    //
+    // It asks about the ORDER's own reference, which is what was sent to the
+    // gateway when the payment was started - not sipTransactionId.
+    if (order.status === 'pending_payment') {
+      const { confirmed } = await paymentConfirmed(order.referenceId, 'order verify');
+      if (confirmed) {
         order.status = 'paid';
         order.paidAt = new Date();
         await order.save();

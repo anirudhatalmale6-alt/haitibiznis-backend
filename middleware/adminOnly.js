@@ -26,6 +26,13 @@ const { requirePin } = require('../utils/consolePin');
 const ADMIN_ONLY = [
   ['POST', /^\/api\/orders\/[^/]+\/(release|refund)$/],
   ['POST', /^\/api\/orders\/auto-release$/],
+  // GET /api/orders with no filter returns EVERY order: the buyer's name,
+  // phone, home address, what they bought, what they paid, and the 4-digit
+  // delivery PIN the driver has to be given. Anyone reading it could collect
+  // somebody else's delivery. It is the seller/admin list, so it takes the
+  // console code. Fetching ONE order by its reference stays open - that is
+  // the buyer's own order-status page, and they have to know the reference.
+  ['GET', /^\/api\/orders\/?$/],
   ['POST', /^\/api\/rides\/driver\/verify\/[^/]+$/],
   ['POST', /^\/api\/rides\/refund\/process\/[^/]+$/],
   ['PUT', /^\/api\/events\/[^/]+$/],
