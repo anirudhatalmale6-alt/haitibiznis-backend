@@ -9,7 +9,10 @@ const transactionSchema = new mongoose.Schema({
   platformFee: { type: Number, default: 0 },
   referenceId: { type: String, required: true, unique: true },
   sipTransactionId: { type: String },
-  paymentMethod: { type: String, enum: ['moncash', 'natcash', 'card', 'all'] },
+  // 'free' belongs here: buy-ticket writes it for a zero-price ticket, and
+  // without it mongoose refused the save, so a free RSVP answered 500 and no
+  // free ticket could ever be issued at all.
+  paymentMethod: { type: String, enum: ['moncash', 'natcash', 'card', 'all', 'free'] },
   status: { type: String, enum: ['pending', 'completed', 'failed', 'refunded'], default: 'pending' },
   buyerName: { type: String },
   buyerPhone: { type: String },

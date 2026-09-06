@@ -14,6 +14,60 @@ function genRef() {
   return 'TL-' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substring(2, 6).toUpperCase();
 }
 
+/* Count the sale on the event, without the read-modify-write that used to be
+ * here: two people paying at the same moment both loaded the event, both added
+ * one, and the second save overwrote the first, so a sold ticket vanished. */
+async function countSold(txn) {
+  await Event.updateOne(
+    { _id: txn.event, 'tickets.name': txn.ticketName },
+    { $inc: { 'tickets.$.sold': txn.qty || 1 } }
+  );
+}
+
+/* Mark a ticket paid, once. The find-and-update is the whole point: it is
+ * atomic, so if the webhook and the ticket page both discover the same payment
+ * at the same second, exactly one of them wins and the sale is counted once.
+ * Returns the updated transaction, or null if somebody else got there first. */
+async function markPaid(txn) {
+  const claimed = await Transaction.findOneAndUpdate(
+    { _id: txn._id, status: 'pending' },
+    { $set: { status: 'completed', paidAt: new Date() } },
+    { new: true }
+  );
+  if (!claimed) return null;
+  await countSold(claimed);
+  return claimed;
+}
+
+/* THE BUG THIS EXISTS TO FIX.
+ *
+ * A ticket only ever became "completed" in one of two places: the webhook, or
+ * the /verify route. The gateway is never told where to send a webhook, so it
+ * never calls one; and nothing in the site ever called /verify. Both doors
+ * existed and neither was ever opened. Every one of the four tickets ever
+ * bought on Tike Lakay sat at "pending" for ever, including one for 3,150 HTG
+ * in May - while the gateway, asked directly, said all along that the money
+ * had arrived.
+ *
+ * So the ticket now asks on its own behalf, every time it is looked at, for as
+ * long as it is unpaid. Pulling like this needs nothing from the gateway and
+ * nothing from the buyer's browser coming back, which is what makes it
+ * reliable on a Haitian phone that may lose the redirect entirely.
+ *
+ * Fails closed: if the gateway cannot be reached, or says anything other than
+ * paid, the ticket is left exactly as it was. */
+async function reconcile(txn) {
+  if (!txn || txn.status !== 'pending') return txn;
+  const { confirmed } = await paymentConfirmed(txn.referenceId, 'ticket reconcile');
+  if (!confirmed) return txn;
+  const paid = await markPaid(txn);
+  if (paid) {
+    console.log('ticket reconcile: ' + txn.referenceId + ' was paid at the gateway ' +
+      'but still said pending here. Marked paid.');
+  }
+  return paid || (await Transaction.findById(txn._id));
+}
+
 router.post('/buy-ticket', async (req, res) => {
   try {
     const { eventId, ticketName, qty, buyerName, buyerPhone, buyerEmail, paymentMethod, koutyeCode } = req.body;
@@ -46,8 +100,7 @@ router.post('/buy-ticket', async (req, res) => {
         paidAt: new Date(), koutyeCode
       });
       await txn.save();
-      ticket.sold = (ticket.sold || 0) + quantity;
-      await event.save();
+      await countSold(txn);
       notifyAdmin('ticket', {
         name: buyerName, phone: buyerPhone, event: event.title,
         ticket: ticketName, qty: quantity, ref: refId
@@ -112,26 +165,12 @@ router.get('/verify', async (req, res) => {
       return res.json({ success: true, status: 'completed', transaction: txn });
     }
 
-    const sipRes = await fetch(SIP_URL + '/api/paiement-verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: SIP_CLIENT, refference_id: ref })
-    });
-    const sipData = await sipRes.json();
+    const sipData = await askGateway(ref);
 
-    if (sipData.trans_status === 'ok' || sipData.status === true) {
-      txn.status = 'completed';
-      txn.paidAt = new Date();
-      await txn.save();
-
-      const event = await Event.findById(txn.event);
-      if (event) {
-        const ticket = event.tickets.find(t => t.name === txn.ticketName);
-        if (ticket) {
-          ticket.sold = (ticket.sold || 0) + txn.qty;
-          await event.save();
-        }
-      }
+    if (isConfirmed(sipData)) {
+      await markPaid(txn);
+      const fresh = await Transaction.findById(txn._id);
+      txn.paidAt = fresh.paidAt;
 
       return res.json({
         success: true, status: 'completed',
@@ -175,19 +214,7 @@ async function handleWebhook(req, res) {
       return res.json({ received: true, paid: false });
     }
 
-    txn.status = 'completed';
-    txn.paidAt = new Date();
-    await txn.save();
-
-    const event = await Event.findById(txn.event);
-    if (event) {
-      const ticket = event.tickets.find(t => t.name === txn.ticketName);
-      if (ticket) {
-        ticket.sold = (ticket.sold || 0) + txn.qty;
-        await event.save();
-      }
-    }
-
+    await markPaid(txn);
     res.json({ received: true, paid: true });
   } catch (err) {
     console.error('Webhook error:', err.message);
@@ -195,10 +222,15 @@ async function handleWebhook(req, res) {
   }
 }
 
+const EVENT_FIELDS = 'title date startTime endTime location typeEmoji typeLabel gradient';
+
 router.get('/ticket/:referenceId', async (req, res) => {
   try {
-    const txn = await Transaction.findOne({ referenceId: req.params.referenceId }).populate('event', 'title date startTime endTime location typeEmoji typeLabel gradient');
+    let txn = await Transaction.findOne({ referenceId: req.params.referenceId });
     if (!txn) return res.status(404).json({ error: 'Ticket not found' });
+    await reconcile(txn);
+    txn = await Transaction.findOne({ referenceId: req.params.referenceId })
+      .populate('event', EVENT_FIELDS);
     res.json(txn);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -207,15 +239,52 @@ router.get('/ticket/:referenceId', async (req, res) => {
 
 const QRCode = require('qrcode');
 
+/* Where the QR code points.
+ *
+ * It used to be the raw API call that marks a payment verified. Two things
+ * wrong with that: pointing a phone camera at a ticket showed the doorman a
+ * screenful of computer text with no verdict in it, and the act of looking at
+ * a ticket was also the act of confirming its payment. A ticket is now read at
+ * a page written for the person on the door. */
+function checkUrl(referenceId) {
+  return 'https://haitibiznis.com/check.html?ref=' + encodeURIComponent(referenceId);
+}
+
 router.get('/ticket/:referenceId/qr', async (req, res) => {
   try {
     const txn = await Transaction.findOne({ referenceId: req.params.referenceId });
     if (!txn) return res.status(404).json({ error: 'Ticket not found' });
-    const verifyUrl = `https://haitibiznis-api.onrender.com/api/payments/verify?referenceId=${txn.referenceId}`;
-    const qrDataUrl = await QRCode.toDataURL(verifyUrl, { width: 300, margin: 2, color: { dark: '#0A0E1A', light: '#FFFFFF' } });
-    res.json({ qr: qrDataUrl, referenceId: txn.referenceId, status: txn.status });
+    const current = await reconcile(txn);
+    const qrDataUrl = await QRCode.toDataURL(checkUrl(txn.referenceId),
+      { width: 300, margin: 2, color: { dark: '#0A0E1A', light: '#FFFFFF' } });
+    res.json({ qr: qrDataUrl, referenceId: txn.referenceId, status: (current || txn).status });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+/* What the door sees. Read only on purpose: anybody can hold up a phone, so
+ * nothing here may change a ticket's state, and it must never invent a pass -
+ * a ticket that cannot be confirmed reads "not paid", not "ok". */
+router.get('/check/:referenceId', async (req, res) => {
+  try {
+    let txn = await Transaction.findOne({ referenceId: req.params.referenceId });
+    if (!txn) return res.status(404).json({ valid: false, reason: 'not_found' });
+    txn = (await reconcile(txn)) || txn;
+    const event = await Event.findById(txn.event).select(EVENT_FIELDS).lean();
+    res.json({
+      valid: txn.status === 'completed',
+      reason: txn.status === 'completed' ? 'ok' : txn.status,
+      referenceId: txn.referenceId,
+      buyerName: txn.buyerName || '',
+      ticketName: txn.ticketName,
+      qty: txn.qty,
+      totalAmount: txn.totalAmount,
+      paidAt: txn.paidAt || null,
+      event: event || null
+    });
+  } catch (err) {
+    res.status(500).json({ valid: false, reason: 'error', error: err.message });
   }
 });
 
