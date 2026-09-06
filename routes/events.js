@@ -17,7 +17,10 @@ const { notifyAdmin } = require('../utils/notify');
  * always did, but the single-event page must keep it - event.html draws the
  * invitation from event.inviteImage, so hiding it there would blank the
  * picture on every event page. */
-const PRIVATE_FIELDS = '-moncashNumber -natcashNumber -organizerEmail';
+// doorCode belongs here for the same reason as the payout numbers: the public
+// event page is what a ticket buyer loads, and anybody holding the door code
+// can check themselves in.
+const PRIVATE_FIELDS = '-moncashNumber -natcashNumber -organizerEmail -doorCode';
 const LIST_FIELDS = PRIVATE_FIELDS + ' -inviteImage';
 
 /* Anything a stranger typed that ends up inside HTML. The share page below

@@ -263,6 +263,24 @@ router.get('/ticket/:referenceId/qr', async (req, res) => {
   }
 });
 
+function checkPayload(txn, event) {
+  return {
+    valid: txn.status === 'completed',
+    reason: txn.status === 'completed' ? 'ok' : txn.status,
+    referenceId: txn.referenceId,
+    buyerName: txn.buyerName || '',
+    ticketName: txn.ticketName,
+    qty: txn.qty,
+    totalAmount: txn.totalAmount,
+    paidAt: txn.paidAt || null,
+    used: !!txn.usedAt,
+    usedAt: txn.usedAt || null,
+    usedBy: txn.usedBy || '',
+    useCount: txn.useCount || 0,
+    event: event || null
+  };
+}
+
 /* What the door sees. Read only on purpose: anybody can hold up a phone, so
  * nothing here may change a ticket's state, and it must never invent a pass -
  * a ticket that cannot be confirmed reads "not paid", not "ok". */
@@ -272,17 +290,113 @@ router.get('/check/:referenceId', async (req, res) => {
     if (!txn) return res.status(404).json({ valid: false, reason: 'not_found' });
     txn = (await reconcile(txn)) || txn;
     const event = await Event.findById(txn.event).select(EVENT_FIELDS).lean();
-    res.json({
-      valid: txn.status === 'completed',
-      reason: txn.status === 'completed' ? 'ok' : txn.status,
-      referenceId: txn.referenceId,
-      buyerName: txn.buyerName || '',
-      ticketName: txn.ticketName,
-      qty: txn.qty,
-      totalAmount: txn.totalAmount,
-      paidAt: txn.paidAt || null,
-      event: event || null
-    });
+    res.json(checkPayload(txn, event));
+  } catch (err) {
+    res.status(500).json({ valid: false, reason: 'error', error: err.message });
+  }
+});
+
+/* ---------------------------------------------------------------------------
+   Marking a ticket used.
+
+   Reading a ticket and spending it are two different acts and only the second
+   one needs a credential, which is why they are two routes. Anybody may hold up
+   a phone at the door and see whether a ticket is paid; only somebody holding
+   the event's door code may burn it.
+
+   The code is per event. The console code opens escrow releases, refunds and
+   driver approval - handing that to whoever is standing at the gate would mean
+   the gate can pay sellers out. A door code unlocks one event and nothing else,
+   so it can be read out over the phone to a helper and forgotten afterwards.
+   The console code is accepted too, because the organiser is often the person
+   on the door and should not need a second secret to get in.
+   --------------------------------------------------------------------------- */
+const { pinIsValid } = require('../utils/consolePin');
+
+// No O/0/I/1: this gets read aloud down a bad phone line and typed on a phone.
+const DOOR_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function makeDoorCode() {
+  const bytes = require('crypto').randomBytes(6);
+  let out = '';
+  for (let i = 0; i < 6; i++) out += DOOR_ALPHABET[bytes[i] % DOOR_ALPHABET.length];
+  return out;
+}
+function normCode(s) {
+  return String(s || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+}
+
+/* Who is allowed to burn this particular ticket. Returns '' for nobody. */
+async function doorAuth(req, event) {
+  const supplied = normCode(req.headers['x-door-code'] || (req.body && req.body.code) || req.query.code);
+  if (!supplied) return '';
+  if (event && event.doorCode && normCode(event.doorCode) === supplied) return 'door';
+  // Checked second because it is 100k PBKDF2 rounds; a door code miss should
+  // not pay for that on every scan.
+  if (await pinIsValid(supplied)) return 'console';
+  return '';
+}
+
+/* The organiser fetches (or creates) the door code for one event. Behind the
+ * console code, because this is the thing that lets somebody in. */
+router.get('/door-code/:eventId', require('../utils/consolePin').requirePin, async (req, res) => {
+  try {
+    const event = await Event.findById(req.params.eventId).select('title doorCode');
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+    if (!event.doorCode) {
+      event.doorCode = makeDoorCode();
+      await event.save();
+    }
+    res.json({ eventId: event._id, title: event.title, doorCode: event.doorCode });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/check/:referenceId/use', async (req, res) => {
+  try {
+    let txn = await Transaction.findOne({ referenceId: req.params.referenceId });
+    if (!txn) return res.status(404).json({ valid: false, reason: 'not_found' });
+
+    const event = await Event.findById(txn.event).select(EVENT_FIELDS + ' doorCode');
+    const who = await doorAuth(req, event);
+    if (!who) return res.status(403).json({ valid: false, reason: 'bad_code' });
+
+    // An unpaid ticket is never burned. Otherwise a second scan of it would
+    // read "already used", which at a gate is indistinguishable from "it was
+    // fine and somebody else came in on it".
+    txn = (await reconcile(txn)) || txn;
+    const eventOut = event ? {
+      title: event.title, date: event.date, startTime: event.startTime,
+      endTime: event.endTime, location: event.location, typeEmoji: event.typeEmoji,
+      typeLabel: event.typeLabel, gradient: event.gradient
+    } : null;
+    if (txn.status !== 'completed') return res.json(checkPayload(txn, eventOut));
+
+    // Shown on the ticket card at the gate, so it is a word he can read, not
+    // the internal name of the credential that was used.
+    const label = String((req.body && req.body.door) || '').slice(0, 40) ||
+      (who === 'console' ? 'Konsòl' : 'Pòt');
+
+    // Whoever wins this update is the entry. Two phones scanning the same
+    // ticket in the same second cannot both be the first one.
+    const claimed = await Transaction.findOneAndUpdate(
+      { _id: txn._id, status: 'completed', usedAt: null },
+      { $set: { usedAt: new Date(), usedBy: label }, $inc: { useCount: 1 } },
+      { new: true }
+    );
+    if (claimed) {
+      return res.json(Object.assign(checkPayload(claimed, eventOut), { firstUse: true, secondsAgo: 0 }));
+    }
+
+    // Already used. Count the attempt, and say how long ago and by whom, because
+    // "the doorman refreshed the page" and "this is the second person holding
+    // the same photo" look identical without a clock.
+    const again = await Transaction.findOneAndUpdate(
+      { _id: txn._id }, { $inc: { useCount: 1 } }, { new: true }
+    );
+    const cur = again || txn;
+    const secondsAgo = cur.usedAt ? Math.max(0, Math.round((Date.now() - new Date(cur.usedAt).getTime()) / 1000)) : null;
+    res.json(Object.assign(checkPayload(cur, eventOut), { firstUse: false, secondsAgo }));
   } catch (err) {
     res.status(500).json({ valid: false, reason: 'error', error: err.message });
   }

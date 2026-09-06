@@ -38,6 +38,10 @@ const eventSchema = new mongoose.Schema({
   },
   moncashNumber: String,
   natcashNumber: String,
+  // The code a helper on the door types once to be allowed to mark tickets
+  // used. It is per event on purpose: the console code opens escrow, refunds
+  // and driver approval, and none of that belongs in a volunteer's pocket.
+  doorCode: { type: String },
   koutyeEnabled: { type: Boolean, default: false },
   creatorPct: { type: Number, default: 0 },
   status: { type: String, enum: ['draft', 'published', 'cancelled'], default: 'published' },

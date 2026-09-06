@@ -15,7 +15,10 @@ app.use(cors({
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'x-admin-pin']
+  // A header the browser has not been told about here is stripped at the
+  // preflight, so the request arrives with no credential and the door is told
+  // its code is wrong. Nothing in the server logs looks broken.
+  allowedHeaders: ['Content-Type', 'x-admin-pin', 'x-door-code']
 }));
 app.use(express.json({ limit: '15mb' }));
 
@@ -35,8 +38,17 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/orders', require('./routes/orders'));
 app.use('/api/verify', require('./routes/verify'));
 
+/* `commit` is here because for months there was no way to tell from outside
+ * which code was actually running. Render's push webhook had stopped firing,
+ * the dashboard still said auto-deploy was on, and four commits sat on main
+ * unnoticed. Render sets RENDER_GIT_COMMIT on every build, so this line is the
+ * one honest answer to "is the fix live?". */
 app.get('/', (req, res) => {
-  res.json({ service: 'HaitiBiznis API', version: '3.0.1', status: 'running', admin: true, verified: true });
+  res.json({
+    service: 'HaitiBiznis API', version: '3.0.1', status: 'running',
+    admin: true, verified: true,
+    commit: (process.env.RENDER_GIT_COMMIT || 'unknown').slice(0, 7)
+  });
 });
 
 app.get('/health', (req, res) => {

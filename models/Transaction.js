@@ -19,6 +19,14 @@ const transactionSchema = new mongoose.Schema({
   buyerEmail: { type: String },
   paymentUrl: { type: String },
   paidAt: { type: Date },
+  // Checking a ticket and using it are different acts. Without these three the
+  // door could only ever say "this is paid", so one photograph of one valid
+  // ticket walked as many people in as it was shown to. usedAt is written once
+  // and never overwritten; useCount counts every accepted scan, so a second
+  // scan is visible instead of silent.
+  usedAt: { type: Date },
+  usedBy: { type: String },
+  useCount: { type: Number, default: 0 },
   koutyeCode: { type: String }
 }, { timestamps: true });
 
