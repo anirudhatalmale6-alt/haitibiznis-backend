@@ -37,6 +37,7 @@ app.use('/api/whatsapp', require('./routes/whatsapp'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/orders', require('./routes/orders'));
 app.use('/api/verify', require('./routes/verify'));
+app.use('/api/pos', require('./routes/pos'));
 
 /* `commit` is here because for months there was no way to tell from outside
  * which code was actually running. Render's push webhook had stopped firing,

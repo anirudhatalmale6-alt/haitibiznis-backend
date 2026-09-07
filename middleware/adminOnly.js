@@ -36,7 +36,15 @@ const ADMIN_ONLY = [
   ['POST', /^\/api\/rides\/driver\/verify\/[^/]+$/],
   ['POST', /^\/api\/rides\/refund\/process\/[^/]+$/],
   ['PUT', /^\/api\/events\/[^/]+$/],
-  ['DELETE', /^\/api\/events\/[^/]+$/]
+  ['DELETE', /^\/api\/events\/[^/]+$/],
+
+  /* The POS kill switch. Everything that decides whether a phone still works
+   * takes the console code. The one route left open is POST /api/pos/hello,
+   * because a phone cannot prove who it is before it has been told - and it
+   * can only ever write the display fields of its own row. */
+  ['GET', /^\/api\/pos\/devices\/?$/],
+  ['POST', /^\/api\/pos\/devices\/[^/]+\/(status|grant)$/],
+  ['POST', /^\/api\/pos\/devices\/block-others$/]
 ];
 
 function isAdminOnly(method, path) {
