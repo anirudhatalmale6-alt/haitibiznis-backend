@@ -35,8 +35,19 @@ const ADMIN_ONLY = [
   ['GET', /^\/api\/orders\/?$/],
   ['POST', /^\/api\/rides\/driver\/verify\/[^/]+$/],
   ['POST', /^\/api\/rides\/refund\/process\/[^/]+$/],
-  ['PUT', /^\/api\/events\/[^/]+$/],
-  ['DELETE', /^\/api\/events\/[^/]+$/],
+  /* PUT and DELETE /api/events/:id used to sit here and no longer do.
+   *
+   * They are not open now - they are checked inside routes/events.js by
+   * openEventFor(), which accepts the console code exactly as this gate did,
+   * OR the event's own manage code, which is generated when the event is
+   * created and belongs to the organiser who created it.
+   *
+   * The reason for moving it: an organiser could not delete their own
+   * duplicate event without being given the code that also opens escrow,
+   * refunds and driver approval. This gate can only answer yes or no to "is
+   * this him"; it cannot look up which event is being touched or who owns it,
+   * and that lookup is the whole question. Nobody who was refused before is
+   * admitted now - there is still no way through without one of two codes. */
 
   /* The POS kill switch. Everything that decides whether a phone still works
    * takes the console code. The one route left open is POST /api/pos/hello,

@@ -27,7 +27,29 @@ const transactionSchema = new mongoose.Schema({
   usedAt: { type: Date },
   usedBy: { type: String },
   useCount: { type: Number, default: 0 },
-  koutyeCode: { type: String }
+  koutyeCode: { type: String },
+
+  // Whether the buyer was actually SENT their ticket, and if not, why.
+  //
+  // A ticket bought on 10 September was paid for and never delivered, and
+  // nothing anywhere recorded that fact - the transaction looked identical to
+  // one that had arrived safely. "Sent" has to be a thing the system knows,
+  // otherwise the only way to discover a silent failure is a buyer
+  // complaining, which is how this one was found.
+  //
+  // deliveredAt is set once, on the first successful send. deliveryError keeps
+  // the last reason a send did not happen, including the honest one where no
+  // WhatsApp credentials are configured at all.
+  deliveredAt: { type: Date },
+  deliveryChannel: { type: String },
+  deliveryError: { type: String },
+  deliveryAttempts: { type: Number, default: 0 },
+
+  // The last eight digits of buyerPhone, which is how a buyer finds their own
+  // ticket again. Stored separately because one person's number gets typed as
+  // "31234567", "+509 3123 4567" and "509-3123-4567" over the months, and a
+  // lookup comparing the raw strings finds none of them.
+  phoneKey: { type: String, index: true }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Transaction', transactionSchema);
