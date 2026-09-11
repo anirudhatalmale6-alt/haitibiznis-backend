@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Event = require('../models/Event');
 const { notifyAdmin } = require('../utils/notify');
-const { pinIsValid } = require('../utils/consolePin');
+const { pinIsValid, requirePin } = require('../utils/consolePin');
 
 /* May this request manage this event?
  *
@@ -294,6 +294,44 @@ router.delete('/:id', async (req, res) => {
 
 /* Cancelling: the safe half of delete. The event stops appearing in the public
    list, every ticket already bought stays valid and still names its event. */
+/* "Where do we get the event code?"
+ *
+ * A fair question with an embarrassing answer: nowhere. The manage code was
+ * generated when an event was created, stored on the creating phone, and never
+ * shown to a human being. And every event that existed before manage codes
+ * were added has no code at all — so for those, the attendee list had no key
+ * in the world that would open it except the console code.
+ *
+ * This is the recovery door, and it takes the console code because that is the
+ * only credential that can prove ownership of an event nobody holds a code
+ * for. It issues a code and returns it once.
+ *
+ * It REPLACES any existing code rather than revealing it — the stored value is
+ * a PBKDF2 derivation and there is nothing to reveal. The response says which
+ * of the two happened, because replacing a code an organiser is already using
+ * is a thing he should be told about rather than discover.
+ */
+router.post('/:id/manage-code', requirePin, async (req, res) => {
+  try {
+    const event = await Event.findById(req.params.id).select('+manageSalt +manageHash');
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    const existed = !!(event.manageSalt && event.manageHash);
+    const manageCode = Event.newManageCode();
+    event.setManageCode(manageCode);
+    await event.save();
+
+    res.json({
+      success: true,
+      manageCode,
+      replaced: existed,
+      event: { _id: event._id, title: event.title, date: event.date }
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 router.post('/:id/cancel', async (req, res) => {
   try {
     const event = await openEventFor(req, res, req.params.id);
