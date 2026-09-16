@@ -152,8 +152,14 @@ async function shareHandler(req, res) {
     if (!event) return res.redirect('https://haitibiznis.com/events.html');
     const title = event.title || 'Evènman';
     const date = event.date ? new Date(event.date + 'T00:00:00').toLocaleDateString('fr-HT', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : '';
+    /* The time was in the database all along and never reached the preview
+     * card, so every event shared to WhatsApp told people the day but not the
+     * hour. It goes immediately after the date, before the address, because
+     * that is the order somebody reads to decide whether they can come. */
+    const time = [event.startTime, event.endTime].filter(Boolean).join(' – ');
     const loc = event.location || '';
-    const desc = `${date}${loc ? ' | ' + loc : ''}${event.description ? ' — ' + event.description.substring(0, 120) : ''}`;
+    const when = date + (time ? ` · ${time}` : '');
+    const desc = `${when}${loc ? ' | ' + loc : ''}${event.description ? ' — ' + event.description.substring(0, 120) : ''}`;
     const emoji = event.typeEmoji || '🎪';
     const pageUrl = `https://haitibiznis.com/event.html?id=${event._id}`;
 
