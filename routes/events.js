@@ -149,7 +149,45 @@ router.get('/:id/share', shareHandler);
 async function shareHandler(req, res) {
   try {
     const event = await Event.findById(req.params.id);
-    if (!event) return res.redirect('https://haitibiznis.com/events.html');
+    /* An invitation whose event is gone.
+     *
+     * This used to redirect to events.html, whose biggest buttons say "create
+     * an event" - so somebody invited to a training arrived at a page inviting
+     * them to build their own, and reasonably concluded the link was broken.
+     * It went out to a WhatsApp group the morning of a session.
+     *
+     * Tell them what actually happened instead. Same escaping rules as below:
+     * nothing here comes from a stranger, but the page is public. */
+    if (!event) return res.status(404).send(`<!DOCTYPE html><html lang="ht"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Evènman sa a pa disponib ankò — Tikè Lakay</title>
+<style>
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background:#F3F6FB;
+   color:#152341;line-height:1.55;display:flex;align-items:center;justify-content:center;
+   min-height:100vh;padding:22px}
+ .card{background:#fff;border:1px solid #DDE4EF;border-radius:18px;padding:26px 22px;
+   max-width:420px;width:100%;text-align:center}
+ .em{font-size:42px}
+ h1{font-size:1.18rem;font-weight:800;margin:10px 0 8px}
+ p{color:#5A6B8A;font-size:.95rem}
+ .btn{display:block;margin-top:16px;padding:14px;border-radius:13px;font-weight:800;
+   text-decoration:none;background:#0B2E6F;color:#fff}
+ .btn.ghost{background:#fff;color:#0B2E6F;border:2px solid #0B2E6F;margin-top:9px}
+ small{display:block;margin-top:14px;color:#93A0B8;font-size:.8rem}
+</style></head><body><div class="card">
+ <div class="em">&#128197;</div>
+ <h1>Evènman sa a pa disponib ankò</h1>
+ <p>Lyen sa a te pou yon evènman ki pa la ankò. Li ka fin pase oswa moun ki t ap
+    òganize l la retire l.</p>
+ <p style="margin-top:8px">Cet événement n'est plus disponible. Le lien correspond à un
+    événement supprimé ou terminé.</p>
+ <a class="btn" href="https://haitibiznis.com/events.html">Wè lòt evènman yo / Voir les autres événements</a>
+ <a class="btn ghost" href="https://wa.me/50946859702">Kontakte nou / Nous contacter</a>
+ <small>Tikè Lakay &middot; HaitiBiznis</small>
+</div></body></html>`);
     const title = event.title || 'Evènman';
     const date = event.date ? new Date(event.date + 'T00:00:00').toLocaleDateString('fr-HT', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : '';
     /* The time was in the database all along and never reached the preview
