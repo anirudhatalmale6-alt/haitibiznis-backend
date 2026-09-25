@@ -413,6 +413,13 @@ router.post('/:id/rsvp', async (req, res) => {
     }
     const name = String(req.body.name || '').trim().slice(0, 80);
     const guests = Math.max(1, Math.min(20, parseInt(req.body.guests) || 1));
+    /* The names of the people coming WITH them. Trimmed, capped at the number
+       of extra guests, and blanks dropped - somebody who fills in one of two
+       boxes should not create an empty attendee. */
+    const guestNames = (Array.isArray(req.body.guest_names) ? req.body.guest_names : [])
+      .map(function (x) { return String(x || '').trim().slice(0, 80); })
+      .filter(Boolean)
+      .slice(0, Math.max(0, guests - 1));
 
     const event = await Event.findById(req.params.id);
     if (!event) return res.status(404).json({ error: 'Event not found' });
@@ -458,10 +465,11 @@ router.post('/:id/rsvp', async (req, res) => {
     if (existing) {
       existing.response = response;
       existing.guests = guests;
+      existing.guestNames = guestNames;
       if (name) existing.name = name;
       existing.updatedAt = new Date();
     } else {
-      event.rsvps.push({ name, phone, phoneKey: key, response, guests });
+      event.rsvps.push({ name, phone, phoneKey: key, response, guests, guestNames });
     }
     await event.save();
 
@@ -522,6 +530,9 @@ router.get('/:id/rsvps', async (req, res) => {
       declined: rows.filter(r => r.response === 'no').length,
       rsvps: rows.map(r => ({
         name: r.name, phone: r.phone, response: r.response, guests: r.guests,
+        /* Who is coming with them. The door needs names, not a number - "+2"
+           tells you how many chairs, not who to let past. */
+        guestNames: r.guestNames || [],
         checkedInAt: r.checkedInAt || null, createdAt: r.createdAt
       }))
     });

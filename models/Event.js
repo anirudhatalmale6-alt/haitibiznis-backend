@@ -26,6 +26,13 @@ const rsvpSchema = new mongoose.Schema({
   phoneKey: { type: String, default: '' },
   response: { type: String, enum: ['yes', 'no'], required: true },
   guests: { type: Number, default: 1 },
+  /* 🚨 25 Sep, Jeffery: "When an attendee RSVP +1 or 2 they should the option
+     to put the name of the extra people."
+     Jennifer's workshop is how this came up - 22 answers, 26 people. A number
+     tells the organiser how many chairs; it does not tell the person on the
+     door who is allowed through. Optional on purpose: nobody is blocked from
+     saying yes because they have not asked a friend's surname yet. */
+  guestNames: { type: [String], default: [] },
   checkedInAt: { type: Date },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
