@@ -418,6 +418,40 @@ router.post('/:id/rsvp', async (req, res) => {
     if (!event) return res.status(404).json({ error: 'Event not found' });
     if (event.status === 'cancelled') return res.status(410).json({ error: 'This event has been cancelled' });
 
+    /* 🚨 24 Sep 2026. Jennifer set a workshop to 25 places and 26 people got in.
+       Jeffery: "Eventhough she set it up for 25 tickets it took 26!"
+       Her own diagnosis was the right one: "li monte 26 e gen 2 moun ki mete
+       yap vinn ak 3 moun lot lan ak 2 moun" - two of the people who said yes
+       are bringing guests.
+
+       There was no capacity check on this route AT ALL. It counted the answers,
+       reported them, and let them run past the limit.
+
+       And the limit has to be counted in PEOPLE, not in answers. 22 people
+       tapped yes and 26 are coming; a cap on the number of RSVPs would have
+       let 25 answers in and 30 through the door. That is the whole bug.
+
+       A "no" is never capped - declining a full event must always be possible. */
+    const capacity = (event.tickets || [])
+      .reduce((a, t) => a + (Number(t.qty) > 0 ? Number(t.qty) : 0), 0);
+    if (response === 'yes' && capacity > 0) {
+      /* Everyone else's head count. Excluding this person so that somebody
+         changing "me plus two" to "just me" is not blocked by their own
+         earlier answer. */
+      const others = (event.rsvps || [])
+        .filter(r => r.response === 'yes' && r.phoneKey !== key)
+        .reduce((a, r) => a + (Number(r.guests) || 1), 0);
+      if (others + guests > capacity) {
+        const left = Math.max(0, capacity - others);
+        return res.status(409).json({
+          error: left === 0
+            ? 'This event is full'
+            : `Only ${left} place${left === 1 ? '' : 's'} left`,
+          full: true, capacity, places_left: left, requested: guests
+        });
+      }
+    }
+
     /* Changing your mind updates your answer instead of adding a second one.
        Two taps by one person is one attendee. */
     const existing = (event.rsvps || []).find(r => r.phoneKey === key);
@@ -437,7 +471,13 @@ router.post('/:id/rsvp', async (req, res) => {
       response,
       /* Their own answer back, and the headline count. Never the list. */
       attending: yes.reduce((a, r) => a + (r.guests || 1), 0),
-      going: yes.length
+      going: yes.length,
+      /* So the page can say how many places are left instead of finding out by
+         being refused. attending counts PEOPLE, which is what fills a room. */
+      capacity: capacity || null,
+      places_left: capacity > 0
+        ? Math.max(0, capacity - yes.reduce((a, r) => a + (Number(r.guests) || 1), 0))
+        : null
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
