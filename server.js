@@ -14,7 +14,7 @@ app.use(cors({
       callback(null, true);
     }
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   // A header the browser has not been told about here is stripped at the
   // preflight, so the request arrives with no credential and the door is told
   // its code is wrong. Nothing in the server logs looks broken.
