@@ -92,6 +92,11 @@ app.get('/api/status/channels', (req, res) => {
     whatsappPhoneId: !!process.env.WHATSAPP_PHONE_ID,
     sms: false,
     email: false,
+    /* Whether the link to the agent commission engine is configured. A BOOLEAN
+       ONLY - the key itself must never leave this process. Without this there
+       is no way to tell a working commission from one that was silently
+       skipped, short of buying a ticket to find out. */
+    koutyeLink: !!process.env.INTERNAL_SERVICE_KEY,
     commit: (process.env.RENDER_GIT_COMMIT || 'unknown').slice(0, 7)
   });
 });
