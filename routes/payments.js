@@ -60,7 +60,86 @@ async function markPaid(txn) {
    * must not hold up their QR code appearing. The result is recorded whichever
    * way it goes. */
   deliverTicket(claimed).catch(() => {});
+  /* Same reasoning as the delivery above: this is the one moment in the whole
+     codebase where "this ticket just became paid" is true exactly once, so it
+     is the only correct place to pay the agent who brought the buyer.
+     Not awaited - an agent commission must never hold up a QR code. */
+  creditAgent(claimed).catch(() => {});
   return claimed;
+}
+
+/* ═══ PAY THE AGENT WHO BROUGHT THIS BUYER ══════════════════════════════════
+   Jeffery, 3 Oct 2026: "I want the buyer to become that agent's referred
+   customer for 12 months... when that customer purchases eligible Tike Lakay
+   tickets, the assigned agent should receive the 3% commission from within
+   Tike Lakay's 7.5% fee."
+
+   The agent ledger lives in the MyPlopPlop service, in a different database,
+   so this is an HTTP call across the two. It is the only one, it is locked to
+   a shared key, and it fails soft in every direction: a commission that cannot
+   be written must never cost somebody their ticket.
+
+   🔑 AMOUNT IS THE TICKET PRICE, NOT WHAT THE BUYER PAID. The 7.5% is added on
+   top of the price, and the 3% comes out of that 7.5%. Sending totalAmount
+   (1,075 on a 1,000 ticket) would pay the agent 32.25 instead of 30.            */
+const KOUTYE_API = process.env.KOUTYE_API_URL || 'https://myplopplop-api.onrender.com';
+
+async function creditAgent(txn) {
+  try {
+    if (!txn) return;
+    const key = process.env.INTERNAL_SERVICE_KEY;
+    if (!key) {
+      console.warn('[TIKELAKAY] no INTERNAL_SERVICE_KEY - agent commission skipped for ' +
+                   txn.referenceId);
+      return;
+    }
+    const price = Number(txn.ticketPrice) || 0;
+    const qty = Number(txn.qty) || 1;
+    const subtotal = price * qty;
+    if (subtotal <= 0) return;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    let out = null;
+    try {
+      const r = await fetch(KOUTYE_API + '/api/referrals/ticket-sale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-internal-key': key },
+        body: JSON.stringify({
+          koutyeCode: txn.koutyeCode || null,
+          phone: txn.buyerPhone,
+          name: txn.buyerName,
+          email: txn.buyerEmail,
+          amount: subtotal,
+          /* The reference is what makes this safe to call twice: the engine
+             refuses to pay the same agent twice for the same one. */
+          transactionId: txn.referenceId,
+          description: 'Tike Lakay — ' + (txn.ticketName || 'tikè')
+        }),
+        signal: controller.signal
+      });
+      out = await r.json().catch(() => null);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const res = (out && out.result) || {};
+    /* Written down either way. A commission that silently did not happen is
+       exactly the failure this whole module exists to stop. */
+    await Transaction.updateOne({ _id: txn._id }, {
+      $set: {
+        commissionResult: res.reason || 'unknown',
+        commissionAmount: res.amount || 0,
+        commissionAgent: res.koutyeCode || null,
+        commissionCheckedAt: new Date()
+      }
+    }).catch(() => {});
+    console.log('[TIKELAKAY] ' + txn.referenceId + ' agent=' + (res.koutyeCode || '-') +
+                ' amount=' + (res.amount || 0) + ' reason=' + (res.reason || '-'));
+  } catch (err) {
+    console.error('[TIKELAKAY] creditAgent failed for ' +
+                  (txn && txn.referenceId) + ':', err.message);
+  }
 }
 
 /* Send the buyer their ticket, once, and write down what happened.
