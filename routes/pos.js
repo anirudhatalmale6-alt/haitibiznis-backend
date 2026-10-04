@@ -16,6 +16,11 @@
 const express = require('express');
 const router = express.Router();
 const PosDevice = require('../models/PosDevice');
+const PosTrial = require('../models/PosTrial');
+const { phoneKey } = require('../utils/ticketDelivery');
+
+/* The free trial is 7 days everywhere - website, POS and marketing. */
+const TRIAL_DAYS = 7;
 
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const clip = (v, n) => String(v == null ? '' : v).slice(0, n);
@@ -62,6 +67,96 @@ router.post('/hello', async (req, res) => {
     /* A duplicate-key race on first contact just means two tabs said hello at
      * once. Ask again rather than answering 500 to a working phone. */
     if (e && e.code === 11000) return res.status(409).json({ error: 'retry' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ------------------------------------------------------------------ trial
+ *
+ * POST /api/pos/trial   { phone }  ->  { trialEndsAt, daysLeft, firstTime }
+ *
+ * Jeffery, 4 Oct 2026: "I do not want someone clearing their app data and
+ * receiving another 7-day trial... Reinstalling the app or clearing data must
+ * NOT restart another trial."
+ *
+ * One question, one answer. The FIRST time a number is seen it is given seven
+ * full days and that date is written down. Every time after that - including
+ * after a reinstall, a cleared cache or a new phone - the SAME date comes back,
+ * whether it is still in the future or long past.
+ *
+ * 🔑 That is also the whole of the "global reset for existing agents": this
+ * table starts empty, so every agent's first visit after this goes live finds
+ * nothing and earns a clean week. Nothing is deleted and nothing is migrated,
+ * so no account, referral, commission, sale or certificate can be harmed.
+ *
+ * ⛔ Public, like /hello, because a phone cannot prove who it is first. It is
+ * safe to be public because it can only ever CREATE a trial or READ one back -
+ * there is no input that can extend, shorten or clear an existing row. The
+ * worst a stranger can do is cause a row to exist for a number that then gets
+ * its seven days, which is what that number was going to get anyway.
+ */
+router.post('/trial', async (req, res) => {
+  try {
+    const raw = String((req.body && req.body.phone) || '');
+    const key = phoneKey(raw);
+    /* ⛔ No number, no answer - and NOT an error. The phone falls back to
+       deciding for itself, exactly as it did before, rather than locking an
+       agent out because they have not typed a number yet. */
+    if (!key || key.length < 6) {
+      return res.json({ ok: false, reason: 'no_phone' });
+    }
+
+    const now = new Date();
+    const fresh = new Date(now.getTime() + TRIAL_DAYS * 86400000);
+
+    /* Look first, then write. Two queries rather than one clever upsert,
+       because "was this row created just now" has to be ANSWERED HONESTLY -
+       the app shows the agent a different message for a brand new trial, and
+       a flag that quietly reports the wrong thing is worse than no flag.
+       This runs once when the app opens, so the extra query costs nothing. */
+    let row = await PosTrial.findOne({ phoneKey: key });
+    let createdNow = false;
+
+    if (!row) {
+      try {
+        row = await PosTrial.create({
+          phoneKey: key, phone: clip(raw, 32), label: clip(req.body.label, 80),
+          trialStartedAt: now, trialEndsAt: fresh, seenCount: 1, lastSeen: now
+        });
+        createdNow = true;
+      } catch (err) {
+        /* Two tabs opened at the same second. The other one won; use its row -
+           and on NO account create a second trial for the same number. */
+        if (!err || err.code !== 11000) throw err;
+        row = await PosTrial.findOne({ phoneKey: key });
+      }
+    }
+
+    if (!createdNow && row) {
+      /* ⛔ trialEndsAt is NEVER in this update. That omission is the rule the
+         whole table exists for: a reinstall may move the counters and nothing
+         else. */
+      await PosTrial.updateOne({ phoneKey: key }, {
+        $set: { phone: clip(raw, 32), label: clip(req.body.label, 80), lastSeen: now },
+        $inc: { seenCount: 1 }
+      });
+    }
+
+    const ends = new Date(row.trialEndsAt);
+    const daysLeft = Math.ceil((ends.getTime() - now.getTime()) / 86400000);
+
+    res.json({
+      ok: true,
+      trialEndsAt: ends.toISOString(),
+      daysLeft: daysLeft,
+      expired: daysLeft < 0,
+      firstTime: createdNow,
+      serverTime: now.toISOString()
+    });
+  } catch (e) {
+    if (e && e.code === 11000) return res.status(409).json({ error: 'retry' });
+    /* ⛔ A trial lookup that fails must never stop an agent working. The phone
+       treats any failure as "no answer" and carries on. */
     res.status(500).json({ error: e.message });
   }
 });
