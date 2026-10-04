@@ -9,7 +9,16 @@ const { sendTicketLink, phoneKey } = require('../utils/ticketDelivery');
 
 const SIP_URL = process.env.SOLUTIONIP_URL || 'https://plopplop.solutionip.app';
 const SIP_CLIENT = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
-const PLATFORM_FEE_PCT = 0.05;
+/* Jeffery, 3 Oct 2026, setting the rule explicitly:
+   "Change the Tikè Lakay service fee from 5% to 7.5% and add it on top of the
+   ticket price. So if the organizer sets a ticket at 1,000 Gdes, the buyer pays
+   1,075 Gdes and the organizer gets the full 1,000 Gdes."
+
+   ⛔ ON TOP, not deducted - he confirmed the direction deliberately. The line
+   below stays `total = subtotal + fee`.
+   🔑 The referring agent's 3% comes OUT of this 7.5%, never on top of it; the
+   split lives in myplopplop-backend/services/referral.js under 'tikelakay'. */
+const PLATFORM_FEE_PCT = 0.075;
 
 function genRef() {
   return 'TL-' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substring(2, 6).toUpperCase();
