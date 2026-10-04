@@ -43,6 +43,16 @@ const transactionSchema = new mongoose.Schema({
   deliveredAt: { type: Date },
   deliveryChannel: { type: String },
   deliveryError: { type: String },
+
+  /* What happened to the agent commission for this ticket. Mongoose is strict
+     by default, so without these four the write in creditAgent() is silently
+     DISCARDED and a commission that never happened looks identical to one that
+     did. The reason is kept even when nothing was paid - "no_active_referral"
+     is the answer to "why did my agent not get this one". */
+  commissionResult: { type: String },
+  commissionAmount: { type: Number, default: 0 },
+  commissionAgent: { type: String },
+  commissionCheckedAt: { type: Date },
   deliveryAttempts: { type: Number, default: 0 },
 
   // The last eight digits of buyerPhone, which is how a buyer finds their own
