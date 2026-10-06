@@ -49,6 +49,13 @@ const transactionSchema = new mongoose.Schema({
      DISCARDED and a commission that never happened looks identical to one that
      did. The reason is kept even when nothing was paid - "no_active_referral"
      is the answer to "why did my agent not get this one". */
+  /* Cards go through Stripe, wallets through SolutionIP. The presence of a
+     stripeSessionId is what tells reconcile() which one to ask. */
+  stripeSessionId: { type: String, index: true },
+  stripePaymentIntent: { type: String },
+  paidAmount: { type: Number },
+  paidCurrency: { type: String },
+
   commissionResult: { type: String },
   commissionAmount: { type: Number, default: 0 },
   commissionAgent: { type: String },
