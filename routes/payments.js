@@ -5,6 +5,7 @@ const Event = require('../models/Event');
 
 const { notifyAdmin } = require('../utils/notify');
 const { paymentConfirmed, isConfirmed, askGateway } = require('../utils/verifyPayment');
+const stripe = require('../utils/stripe');
 const { sendTicketLink, phoneKey } = require('../utils/ticketDelivery');
 
 const SIP_URL = process.env.SOLUTIONIP_URL || 'https://plopplop.solutionip.app';
@@ -185,7 +186,37 @@ async function deliverTicket(txn) {
  * paid, the ticket is left exactly as it was. */
 async function reconcile(txn) {
   if (!txn || txn.status !== 'pending') return txn;
-  const { confirmed } = await paymentConfirmed(txn.referenceId, 'ticket reconcile');
+
+  /* 🔑 TWO PROVIDERS, ONE CHOKE POINT. Wallets are SolutionIP, cards are
+     Stripe, and this is the only place that decides which to ask - so the
+     ticket page, the webhook, the QR route and the three-minute sweep all
+     gain card support without any of them knowing Stripe exists. */
+  let confirmed = false;
+  if (txn.stripeSessionId) {
+    const out = await stripe.confirmCheckout(txn.stripeSessionId, txn.totalAmount, 'HTG');
+    if (!out.ok) {
+      console.error('ticket reconcile: could not ask Stripe about ' +
+        txn.referenceId + ' - leaving it pending. ' + out.error);
+      return txn;
+    }
+    /* ⛔ PAID AT STRIPE IS NOT ENOUGH. The amount has to be the amount we
+       asked for, or a session completed for a different figure would settle a
+       1,075 ticket for whatever was actually charged. */
+    if (out.stripe_paid && !out.amount_matches) {
+      console.error('ticket reconcile: ' + txn.referenceId + ' was paid at Stripe for ' +
+        out.amount_total + ' ' + out.currency + ' but we asked for ' + txn.totalAmount +
+        ' HTG. NOT marking it paid.');
+      return txn;
+    }
+    confirmed = out.paid;
+    if (confirmed) {
+      await Transaction.updateOne({ _id: txn._id }, { $set: {
+        stripePaymentIntent: out.payment_intent || null,
+        paidAmount: out.amount_total, paidCurrency: out.currency } }).catch(() => {});
+    }
+  } else {
+    confirmed = (await paymentConfirmed(txn.referenceId, 'ticket reconcile')).confirmed;
+  }
   if (!confirmed) return txn;
   const paid = await markPaid(txn);
   if (paid) {
@@ -251,6 +282,46 @@ router.post('/buy-ticket', async (req, res) => {
     await txn.save();
 
     const returnUrl = `https://haitibiznis.com/ticket.html?ref=${refId}`;
+
+    /* ═══ CARD → STRIPE. WALLET → SOLUTIONIP. ═══════════════════════════════
+       Jeffery, 4 Oct: "MonCash + NatCash = SolutionIP. Credit/Debit Cards =
+       Stripe. Please keep those two payment flows separate."
+       The two never meet: a card never touches the gateway, and the gateway is
+       never asked about a card. That separation is what the old MyPlopPlop
+       checkout got wrong - it sent people to Stripe and then asked SolutionIP
+       whether they had paid. */
+    if (paymentMethod === 'card') {
+      if (!stripe.configured()) {
+        await Transaction.deleteOne({ _id: txn._id }).catch(() => {});
+        return res.status(503).json({ error: 'Kat kredi pa disponib pou kounye a.' });
+      }
+      const sess = await stripe.createCheckout({
+        amount: total, currency: 'HTG',
+        label: `${event.title} — ${ticketName}${quantity > 1 ? ' x' + quantity : ''}`,
+        reference: refId,
+        successUrl: returnUrl,
+        cancelUrl: `https://haitibiznis.com/event.html?id=${eventId}`,
+        email: buyerEmail || undefined,
+        metadata: { event: String(eventId), ticket: ticketName, qty: String(quantity) }
+      });
+      if (!sess.ok) {
+        console.error('Stripe checkout failed for ' + refId + ': ' + sess.error);
+        await Transaction.deleteOne({ _id: txn._id }).catch(() => {});
+        return res.status(502).json({ error: 'Nou pa ka louvri paj peman an. Eseye ankò.' });
+      }
+      txn.stripeSessionId = sess.id;
+      txn.paymentUrl = sess.url;
+      await txn.save();
+      notifyAdmin('ticket', {
+        name: buyerName, phone: buyerPhone, event: event.title,
+        ticket: ticketName, qty: quantity, ref: refId
+      }).catch(() => {});
+      return res.json({
+        success: true, referenceId: refId, paymentUrl: sess.url,
+        amount: total, provider: 'stripe'
+      });
+    }
+
     const sipRes = await fetch(SIP_URL + '/api/paiement-marchand', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -298,6 +369,12 @@ router.get('/verify', async (req, res) => {
       return res.json({ success: true, status: 'completed', transaction: txn });
     }
 
+    /* ⛔ A card payment is not SolutionIP's to confirm. Without this a Stripe
+       transaction could be marked paid by a gateway that never saw it - which
+       is exactly the bug the old MyPlopPlop checkout had. */
+    if (txn && txn.stripeSessionId) {
+      return res.status(400).json({ error: 'This is a card payment. It is confirmed with Stripe.' });
+    }
     const sipData = await askGateway(ref);
 
     if (isConfirmed(sipData)) {
@@ -338,6 +415,16 @@ async function handleWebhook(req, res) {
     const txn = await Transaction.findOne({ referenceId: ref });
     if (!txn) return res.status(404).json({ error: 'Transaction not found' });
     if (txn.status === 'completed') return res.json({ received: true, alreadyPaid: true });
+
+    /* ⛔ A card payment belongs to Stripe. SolutionIP has never seen it, so
+       asking the gateway would always answer "no" - but routing it through
+       reconcile() instead means a webhook arriving for a card transaction
+       still settles correctly rather than silently doing nothing. */
+    if (txn.stripeSessionId) {
+      const after = await reconcile(txn);
+      return res.json({ received: true, paid: !!(after && after.status === 'completed'),
+                        provider: 'stripe' });
+    }
 
     const { confirmed } = await paymentConfirmed(ref, 'ticket webhook');
     if (!confirmed) {
