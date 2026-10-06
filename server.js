@@ -97,6 +97,10 @@ app.get('/api/status/channels', (req, res) => {
        is no way to tell a working commission from one that was silently
        skipped, short of buying a ticket to find out. */
     koutyeLink: !!process.env.INTERNAL_SERVICE_KEY,
+    /* Whether cards can be taken at all. A BOOLEAN ONLY - the key never leaves
+       this process. Without it the only way to find out is to try to buy a
+       ticket, which means creating a real transaction to answer a question. */
+    stripe: !!process.env.STRIPE_RESTRICTED_KEY,
     commit: (process.env.RENDER_GIT_COMMIT || 'unknown').slice(0, 7)
   });
 });
