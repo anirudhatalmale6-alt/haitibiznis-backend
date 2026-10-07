@@ -91,12 +91,28 @@ app.get('/', (req, res) => {
  * a ticket somebody paid for, and from outside the two are indistinguishable.
  * Booleans only - never the values. */
 app.get('/api/status/channels', (req, res) => {
+  const DELIVERY = require('./utils/deliver').channels();
   res.json({
     whatsapp: !!(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_ID),
     whatsappToken: !!process.env.WHATSAPP_TOKEN,
     whatsappPhoneId: !!process.env.WHATSAPP_PHONE_ID,
+    /* No SMS supplier anywhere in the ecosystem. Stated as a literal because
+       it IS a literal - there is nothing to ask. */
     sms: false,
-    email: false,
+    /* These used to be the hard-coded literal `false`, which was true at the
+       time and would have gone on reading false on the day a mail account was
+       connected. Asked of utils/deliver.js now, so the answer stays honest by
+       itself. Booleans only - a credential never leaves this process. */
+    email: DELIVERY.email,
+    emailKey: DELIVERY.emailKey,
+    emailFrom: DELIVERY.emailFrom,
+    /* A WhatsApp number is not enough on its own: Meta refuses a free-form
+       message to anybody who has not written to the business in the last 24
+       hours, so without an APPROVED TEMPLATE the channel is configured and
+       still cannot reach a buyer. The two are reported separately for that
+       reason. */
+    whatsappTemplateTicket: DELIVERY.whatsappTemplateTicket,
+    whatsappTemplateCourse: DELIVERY.whatsappTemplateCourse,
     /* Whether the link to the agent commission engine is configured. A BOOLEAN
        ONLY - the key itself must never leave this process. Without this there
        is no way to tell a working commission from one that was silently

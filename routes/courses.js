@@ -29,6 +29,7 @@ const { notifyAdmin } = require('../utils/notify');
 const { paymentConfirmed } = require('../utils/verifyPayment');
 const stripe = require('../utils/stripe');
 const { phoneKey } = require('../utils/ticketDelivery');
+const { sendCourseAccess } = require('../utils/courseDelivery');
 const { requirePin } = require('../utils/consolePin');
 
 const SIP_URL = process.env.SOLUTIONIP_URL || 'https://plopplop.solutionip.app';
@@ -99,6 +100,14 @@ async function markRegPaid(reg) {
       course.seatsTaken + '/' + course.maxStudents + '). Honoured and flagged.');
   }
 
+  /* Tell the STUDENT. This is the one moment in the codebase where "this
+     registration just became paid" is true exactly once, which makes it the
+     only correct place to send it - putting the send in the callers instead
+     would mean four copies and a student receiving the same mail four times.
+     Not awaited: a slow mail server must not hold up their confirmation
+     screen. */
+  deliverRegistration(claimed).catch(() => {});
+
   /* He has to invite this person's Google account by hand in version 1, so
      being told a student has paid is not a nicety - it is the next step in the
      flow. Not awaited: a slow notification must not hold up the student's
@@ -109,6 +118,43 @@ async function markRegPaid(reg) {
   }).catch(() => {});
 
   return claimed;
+}
+
+/* Send a paid student their confirmation and access instructions, once, and
+   write down what happened either way.
+
+   Fails soft in every direction: a registration that cannot be delivered is
+   still a valid registration, and the student can still find it with
+   /my-courses. What must not happen is a failure nobody can see afterwards. */
+async function deliverRegistration(reg) {
+  if (!reg || reg.deliveredAt) return { sent: false, reason: 'already delivered' };
+  /* The Classroom fields are select:false, so they have to be asked for by
+     name. Only reached from here and from the resend route, both of which run
+     only for a registration that is already paid. */
+  let course = null, secret = null;
+  try {
+    course = await Course.findById(reg.course).select(Course.PUBLIC_FIELDS).lean();
+    secret = await Course.findById(reg.course)
+      .select('+classroomLink +classroomCode +accessInstructions').lean();
+  } catch (e) { /* a course we cannot read still has a reference number */ }
+
+  const result = await sendCourseAccess(reg, course, {
+    link: (secret && secret.classroomLink) || '',
+    code: (secret && secret.classroomCode) || '',
+    instructions: (secret && secret.accessInstructions) || ''
+  });
+
+  const update = { $inc: { deliveryAttempts: 1 } };
+  if (result.sent) {
+    update.$set = { deliveredAt: new Date(), deliveryChannel: result.channel, deliveryError: '' };
+  } else {
+    update.$set = { deliveryError: String(result.reason || 'unknown').slice(0, 300) };
+    console.log('[KOU] delivery: ' + reg.referenceId + ' not sent - ' + result.reason);
+  }
+  /* Guarded on deliveredAt so two racing sends cannot both claim delivery. */
+  await CourseRegistration.updateOne(
+    { _id: reg._id, deliveredAt: { $exists: false } }, update).catch(() => {});
+  return result;
 }
 
 /* ═══ ASK WHOEVER TOOK THE MONEY ════════════════════════════════════════════
@@ -175,6 +221,10 @@ function regPayload(reg) {
     paidAt: reg.paidAt || null,
     classroomStatus: reg.classroomStatus,
     invitedAt: reg.invitedAt || null,
+    /* So the page can say "we emailed you" or stay quiet, instead of
+       promising a message that was never sent. */
+    delivered: !!reg.deliveredAt,
+    deliveryChannel: reg.deliveryChannel || null,
     createdAt: reg.createdAt
   };
 }
@@ -340,6 +390,8 @@ router.get('/admin/:id/students', requirePin, async (req, res) => {
         status: cur.status, paymentMethod: cur.paymentMethod,
         paidAt: cur.paidAt || null, classroomStatus: cur.classroomStatus,
         invitedAt: cur.invitedAt || null, overCapacity: !!cur.overCapacity,
+        delivered: !!cur.deliveredAt, deliveryChannel: cur.deliveryChannel || null,
+        deliveryError: cur.deliveryError || '', deliveryAttempts: cur.deliveryAttempts || 0,
         createdAt: cur.createdAt
       });
     }
@@ -409,6 +461,27 @@ router.post('/admin/registration/:ref/classroom', requirePin, async (req, res) =
     }
     await CourseRegistration.updateOne({ _id: reg._id }, { $set: set });
     res.json({ success: true, classroomStatus: want });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/* Send a paid student their confirmation again, on request. Used by the button
+   on the admin student list, for when somebody says it never came. */
+router.post('/admin/registration/:ref/resend', requirePin, async (req, res) => {
+  try {
+    const reg = await CourseRegistration.findOne({ referenceId: req.params.ref });
+    if (!reg) return res.status(404).json({ error: 'Registration not found' });
+    if (reg.status !== 'completed') {
+      return res.status(400).json({ error: 'This student has not paid yet.', status: reg.status });
+    }
+    /* Cleared so the guard inside deliverRegistration does not refuse a
+       deliberate resend - it exists to stop ACCIDENTAL double sends. */
+    await CourseRegistration.updateOne({ _id: reg._id }, { $unset: { deliveredAt: 1 } });
+    reg.deliveredAt = undefined;
+    const result = await deliverRegistration(reg);
+    /* Honest either way. A button that always says "sent!" is how a
+       confirmation goes undelivered without anybody noticing. */
+    res.json({ sent: result.sent, channel: result.channel || null,
+               reason: result.reason || null });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -707,3 +780,4 @@ module.exports = router;
 /* Exported for the background payment sweep, so there is one definition of
    "this registration is paid" and one atomic claim behind it. */
 module.exports.reconcileReg = reconcileReg;
+module.exports.deliverRegistration = deliverRegistration;

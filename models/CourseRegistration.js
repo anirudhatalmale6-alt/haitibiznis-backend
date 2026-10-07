@@ -71,6 +71,16 @@ const registrationSchema = new mongoose.Schema({
      than refused - refusing it would take the money and give nothing. */
   overCapacity: { type: Boolean, default: false },
 
+  /* Whether the student was actually SENT their confirmation, and if not, why.
+     The same four fields the tickets carry, and for the same reason: a
+     registration that silently failed to deliver looked identical to one that
+     arrived, so the only way to discover a failure was somebody complaining.
+     deliveredAt is written once, on the first successful send. */
+  deliveredAt: { type: Date },
+  deliveryChannel: { type: String },
+  deliveryError: { type: String },
+  deliveryAttempts: { type: Number, default: 0 },
+
   adminNote: { type: String, default: '', maxlength: 500 }
 }, { timestamps: true });
 

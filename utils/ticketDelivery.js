@@ -7,45 +7,33 @@
  * He is right on both counts, and the second half is the important one. The
  * checkout asks for a phone number and nothing else - no email, no account, no
  * password - because that is all most buyers in Haiti have. So the phone
- * number is the only thing that can ever be used to find a ticket again, and
- * until now nothing used it for that.
+ * number is the only thing that can ever be used to find a ticket again.
  *
- * Two ways out of here, and the platform should have both:
- *   1. push  - send the buyer their ticket link (this file, sendTicketLink)
+ * Two ways out of here, and the platform has both:
+ *   1. push  - send the buyer their ticket (this file)
  *   2. pull  - let the buyer look it up by the number they paid with
  *              (routes/payments.js, /my-tickets)
  *
- * The push half rides on the WhatsApp Cloud API that already carries the
- * MsouWout ride bot. It is the same graph.facebook.com send that answers
- * "Kous" today, so this needs no new supplier and no new number.
+ * ⚠️ CORRECTING WHAT THIS COMMENT USED TO SAY. It claimed the push "rides on
+ * the WhatsApp Cloud API that already carries the MsouWout ride bot… so this
+ * needs no new supplier and no new number". Both halves are wrong and I wrote
+ * them. There is no live bot - whatsapp-bot/ is a prototype whose service was
+ * never created - and connecting a number to Meta's Cloud API takes that
+ * number OUT of the ordinary WhatsApp app, so his business number cannot be
+ * the one used. It needs a second SIM. Told him again on 7 Oct.
  *
- * ⚠️ It is only a push if the credentials are actually set. sendMessage in
- * routes/whatsapp.js falls back to writing [WA-DRY] into the log and returning
- * as though it had sent - which is the correct behaviour for a bot in
- * development and a silent lie for a ticket somebody paid for. So this reports
- * honestly what it did, and the caller records it on the transaction. A ticket
- * whose delivery failed must look different from one that was delivered.
+ * The sending itself now lives in utils/deliver.js, shared with the online
+ * classes, so there is one answer to "how do we reach this person" instead of
+ * one per module.
  */
-const WA_ENABLED = () => !!(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_ID);
-
-/* Haitian mobiles are eight digits. WhatsApp wants them in full international
-   form with no plus and no spaces. The same person's number reaches us as
-   "31234567", "+509 3123 4567", "509-3123-4567" and "(509) 31234567" over
-   the months, depending on who typed it. */
-function waNumber(raw) {
-  let d = String(raw || '').replace(/\D/g, '');
-  if (!d) return null;
-  if (d.length === 8) d = '509' + d;              /* local, add the country */
-  if (d.length === 11 && d.startsWith('509')) return d;
-  /* Anything else is a foreign number the buyer typed in full. Send to it as
-     given rather than mangling it into a Haitian one. */
-  return d.length >= 10 ? d : null;
-}
+const { deliver, wrapEmail, row, esc } = require('./deliver');
+const { waNumber, configured: WA_ENABLED } = require('./whatsappSend');
 
 /* The same normalisation, used to FIND a ticket by phone. Stored numbers were
-   typed by hand over months in every one of the formats above, so a lookup
-   that compares the raw strings finds nothing and tells the buyer, wrongly,
-   that they never bought a ticket. */
+   typed by hand over months in every format, so a lookup that compares the raw
+   strings finds nothing and tells the buyer, wrongly, that they never bought a
+   ticket. Kept here because routes/pos.js and routes/courses.js both import it
+   from this file, and models/PosTrial.js documents that it must match. */
 function phoneKey(raw) {
   const d = String(raw || '').replace(/\D/g, '');
   if (!d) return '';
@@ -81,36 +69,58 @@ function ticketMessage(txn, event) {
   ].filter(l => l !== '').join('\n');
 }
 
-/* Returns what actually happened, never a bare true. */
-async function sendTicketLink(txn, event) {
-  const to = waNumber(txn && txn.buyerPhone);
-  if (!to) return { sent: false, channel: 'whatsapp', reason: 'no usable phone number' };
-  if (!WA_ENABLED()) return { sent: false, channel: 'whatsapp', reason: 'WhatsApp credentials not configured' };
-  try {
-    const url = 'https://graph.facebook.com/v21.0/' + process.env.WHATSAPP_PHONE_ID + '/messages';
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + process.env.WHATSAPP_TOKEN,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to,
-        type: 'text',
-        text: { preview_url: true, body: ticketMessage(txn, event) }
-      })
-    });
-    /* fetch does not throw on 4xx. A ticket reported as delivered because
-       nobody read the status code is the bug this whole file exists to end. */
-    if (!r.ok) {
-      const body = await r.text().catch(() => '');
-      return { sent: false, channel: 'whatsapp', reason: 'HTTP ' + r.status + ' ' + body.slice(0, 200) };
-    }
-    return { sent: true, channel: 'whatsapp', to };
-  } catch (err) {
-    return { sent: false, channel: 'whatsapp', reason: err.message };
-  }
+function ticketEmail(txn, event) {
+  const title = (event && event.title) || 'Evènman';
+  const when = [(event && event.date) || '', (event && event.startTime) || '']
+    .filter(Boolean).join(' ');
+  let body = '<p style="margin:0 0 14px;">Bonjou ' + esc(txn.buyerName || '') +
+    ',<br>Tikè ou konfime. Men detay yo:</p>';
+  body += row('Evènman', title);
+  if (when) body += row('Dat', when);
+  if (event && event.location) body += row('Kote', event.location);
+  body += row('Tikè', (txn.ticketName || 'Tikè') + ' x' + (txn.qty || 1));
+  body += row('Referans', txn.referenceId);
+  body += '<p style="margin:16px 0 0;font-size:14px;color:#5A6B8A;">' +
+    'Montre kòd QR la nan pòt la. / Présentez le QR code à l\'entrée.</p>';
+  return {
+    subject: '🎟️ Tikè ou — ' + title,
+    html: wrapEmail({
+      heading: 'TIKÈ OU KONFIME',
+      subheading: 'Votre billet est confirmé',
+      bodyHtml: body,
+      buttonText: 'LOUVRI TIKÈ A',
+      buttonUrl: ticketUrl(txn.referenceId),
+      footer: 'Tikè Lakay — HaitiBiznis<br>Ou ka jwenn tikè ou nenpòt lè sou haitibiznis.com/my-tickets.html'
+    })
+  };
 }
 
-module.exports = { sendTicketLink, ticketUrl, ticketMessage, waNumber, phoneKey, WA_ENABLED };
+/* Returns what actually happened, never a bare true. */
+async function sendTicketLink(txn, event) {
+  if (!txn) return { sent: false, reason: 'no transaction' };
+  const mail = ticketEmail(txn, event);
+  return deliver(
+    { phone: txn.buyerPhone, email: txn.buyerEmail, name: txn.buyerName },
+    {
+      wa: {
+        /* Set once the template is approved by Meta. Until then the free-form
+           text below is attempted, which only reaches somebody with an open
+           24-hour window - see utils/whatsappSend.js. */
+        template: process.env.WHATSAPP_TEMPLATE_TICKET || '',
+        lang: process.env.WHATSAPP_TEMPLATE_LANG || 'fr',
+        bodyParams: [
+          txn.buyerName || 'Kliyan',
+          (event && event.title) || 'evènman an',
+          (txn.ticketName || 'Tikè') + ' x' + (txn.qty || 1),
+          txn.referenceId
+        ],
+        urlSuffix: txn.referenceId,
+        text: ticketMessage(txn, event)
+      },
+      email: mail
+    }
+  );
+}
+
+module.exports = { sendTicketLink, ticketUrl, ticketMessage, ticketEmail,
+                   waNumber, phoneKey, WA_ENABLED };
