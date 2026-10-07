@@ -3,9 +3,9 @@ const NOTIFY_WEBHOOK = process.env.NOTIFY_WEBHOOK || '';
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'business@haitibiznis.com';
 
 async function notifyAdmin(type, data) {
-  const emojis = { ride: '🚗', driver: '👤', ticket: '🎫', refund: '💸', event: '📅' };
+  const emojis = { ride: '🚗', driver: '👤', ticket: '🎫', refund: '💸', event: '📅', course: '🎓' };
   const emoji = emojis[type] || '📢';
-  const subjects = { ride: 'New Ride Request', driver: 'New Driver Signup', ticket: 'New Ticket Purchase', refund: 'Refund Request', event: 'New Event Created' };
+  const subjects = { ride: 'New Ride Request', driver: 'New Driver Signup', ticket: 'New Ticket Purchase', refund: 'Refund Request', event: 'New Event Created', course: 'Course Registration PAID - invite this student' };
 
   let message = '';
   switch (type) {
@@ -20,6 +20,13 @@ async function notifyAdmin(type, data) {
       break;
     case 'refund':
       message = `${emoji} DEMANN RANBOUSMAN!\n\nTel: ${data.phone}\nRezon: ${data.reason}\nMontan: ${data.amount} HTG`;
+      break;
+    /* A paid course registration is not just news - it is a job. Google
+       Classroom invitations are sent by hand in version 1, so until somebody
+       invites this Gmail address the student has paid and cannot get in. The
+       address is the first thing in the message for that reason. */
+    case 'course':
+      message = `${emoji} NOUVO ETIDYAN PEYE!\n\nGmail: ${data.email}\n\nNon: ${data.name || 'N/A'}\nTel: ${data.phone || 'N/A'}\nKou: ${data.course}\nMontan: ${data.amount} HTG\nRef: ${data.ref}\n\n➡️ Envite Gmail sa a nan Google Classroom, apre sa make li "Envite" nan kou-admin.html`;
       break;
     case 'event':
       message = `${emoji} NOUVO EVENMAN!\n\nTit: ${data.title}\nDat: ${data.date}\nKote: ${data.location}`;

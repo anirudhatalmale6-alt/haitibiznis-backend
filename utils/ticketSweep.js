@@ -45,9 +45,18 @@ const BATCH = 25;
    already requires plenty, and requiring it back from here would make a cycle
    whose failure mode is an empty object at call time - undefined is not a
    function, at three in the morning, on the one path that handles money. */
-async function sweepOnce({ reconcile, onPaid }) {
+/* `model` and `label` are parameters with the old behaviour as their defaults,
+   so the ticket sweep is byte-for-byte the same sweep it always was. The
+   course registrations in models/CourseRegistration.js have the same two
+   fields this depends on - status and createdAt - and the same need: a student
+   who finishes paying inside the MonCash app and never comes back must still
+   end up with their place in the class. Parameterising was the alternative to
+   a second copy of this file, and a second copy is a second bug. */
+async function sweepOnce({ reconcile, onPaid, model, label }) {
+  const Model = model || Transaction;
+  const what = label || 'ticket';
   const now = Date.now();
-  const pending = await Transaction.find({
+  const pending = await Model.find({
     status: 'pending',
     createdAt: { $gte: new Date(now - MAX_AGE_MS), $lte: new Date(now - MIN_AGE_MS) }
   }).sort({ createdAt: 1 }).limit(BATCH);
@@ -58,27 +67,31 @@ async function sweepOnce({ reconcile, onPaid }) {
       const after = await reconcile(txn);
       if (after && after.status === 'completed') {
         confirmed++;
-        console.log('ticket sweep: ' + txn.referenceId + ' was paid at the gateway. Marked paid.');
+        console.log(what + ' sweep: ' + txn.referenceId + ' was paid at the gateway. Marked paid.');
         if (onPaid) await onPaid(after).catch(() => {});
       }
     } catch (err) {
       /* One bad record must never stop the rest of the batch. */
-      console.error('ticket sweep: ' + txn.referenceId + ' failed: ' + err.message);
+      console.error(what + ' sweep: ' + txn.referenceId + ' failed: ' + err.message);
     }
   }
   return { looked: pending.length, confirmed };
 }
 
 function startTicketSweep(deps) {
+  const what = (deps && deps.label) || 'ticket';
   const tick = () => {
-    sweepOnce(deps).catch(err => console.error('ticket sweep error:', err.message));
+    sweepOnce(deps).catch(err => console.error(what + ' sweep error:', err.message));
   };
   /* Not immediately on boot: Render restarts this process often, and a sweep
-     racing the first database connection just logs a confusing error. */
-  setTimeout(tick, 30 * 1000);
+     racing the first database connection just logs a confusing error.
+     firstDelayMs also staggers the two sweeps that now run in this process, so
+     they do not both start talking to the gateway in the same second. */
+  setTimeout(tick, (deps && deps.firstDelayMs) || 30 * 1000);
   const timer = setInterval(tick, EVERY_MS);
   if (timer.unref) timer.unref();
-  console.log('Ticket payment sweep enabled (every ' + (EVERY_MS / 60000) + ' min)');
+  console.log(what.charAt(0).toUpperCase() + what.slice(1) +
+              ' payment sweep enabled (every ' + (EVERY_MS / 60000) + ' min)');
   return timer;
 }
 

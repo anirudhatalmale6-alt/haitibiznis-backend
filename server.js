@@ -65,6 +65,11 @@ app.use('/api/verify', require('./routes/verify'));
 app.use('/api/pos', require('./routes/pos'));
 app.use('/api/promo', require('./routes/promo'));
 
+/* Paid online classes. Registration, payment and access control only - the
+   teaching stays in Google Classroom. See routes/courses.js. */
+const coursesRouter = require('./routes/courses');
+app.use('/api/courses', coursesRouter);
+
 /* `commit` is here because for months there was no way to tell from outside
  * which code was actually running. Render's push webhook had stopped firing,
  * the dashboard still said auto-deploy was on, and four commits sat on main
@@ -129,6 +134,17 @@ mongoose.connect(MONGO_URI)
          payment to be noticed. See utils/ticketSweep.js. */
       require('./utils/ticketSweep').startTicketSweep({
         reconcile: paymentsRouter.reconcile
+      });
+
+      /* The same sweep, over course registrations. A student who finishes
+         paying inside the MonCash app and never returns to the browser must
+         still end up with their place in the class. Offset by 45s so the two
+         sweeps do not both start calling the gateway on the same tick. */
+      require('./utils/ticketSweep').startTicketSweep({
+        reconcile: coursesRouter.reconcileReg,
+        model: require('./models/CourseRegistration'),
+        label: 'course',
+        firstDelayMs: 75 * 1000
       });
     });
   })
