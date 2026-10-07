@@ -49,6 +49,20 @@ function textFromHtml(html) {
     .trim();
 }
 
+/* Where a reply should go.
+ *
+ * Once the domain is authenticated we send FROM an address at haitibiznis.com,
+ * because that is what makes a message trusted. But nobody reads a mailbox at
+ * haitibiznis.com - the domain only has Namecheap forwarding on it - so a
+ * student who hits Reply would be writing into nothing.
+ *
+ * ⚠️ A mailbox existing is not the same as mail arriving. Setting Reply-To to
+ * an address he actually opens means a reply reaches him without anybody
+ * having to create and maintain a forwarder first. */
+function replyAddress() {
+  return process.env.MAIL_REPLY_TO || '';
+}
+
 async function sendMail({ to, toName, subject, html, text, replyTo }) {
   if (!configured()) {
     return { sent: false, channel: 'email',
@@ -66,7 +80,8 @@ async function sendMail({ to, toName, subject, html, text, replyTo }) {
     htmlContent: html,
     textContent: text || textFromHtml(html)
   };
-  if (replyTo && looksLikeEmail(replyTo)) body.replyTo = { email: replyTo };
+  const rt = replyTo || replyAddress();
+  if (rt && looksLikeEmail(rt)) body.replyTo = { email: rt };
 
   let r, payload;
   try {
@@ -93,4 +108,4 @@ async function sendMail({ to, toName, subject, html, text, replyTo }) {
   return { sent: true, channel: 'email', to: String(to).trim(), id: id };
 }
 
-module.exports = { sendMail, configured, fromAddress, textFromHtml, looksLikeEmail };
+module.exports = { sendMail, configured, fromAddress, replyAddress, textFromHtml, looksLikeEmail };
