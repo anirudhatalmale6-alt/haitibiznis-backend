@@ -114,7 +114,7 @@ async function requireInstructor(req, res, next) {
     const bearer = hdr.toLowerCase().startsWith('bearer ') ? hdr.slice(7).trim() : '';
     const token = bearer || req.headers['x-instructor-token'] || req.query.token;
     const me = await instructorFromToken(token);
-    if (!me) return res.status(401).json({ error: 'Sign in again', signedOut: true });
+    if (!me) return res.status(401).json({ error: 'Sesyon an fini. Konekte ankò.', signedOut: true });
     req.instructor = me;
     next();
   } catch (err) {

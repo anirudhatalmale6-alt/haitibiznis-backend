@@ -150,11 +150,11 @@ router.post('/admin', requirePin, async (req, res) => {
     const name = String(req.body.name || '').trim();
     const email = String(req.body.email || '').trim().toLowerCase();
     const phone = String(req.body.phone || '').trim();
-    if (!name) return res.status(400).json({ error: 'Name is required' });
-    if (!looksLikeEmail(email)) return res.status(400).json({ error: 'A valid email is required' });
+    if (!name) return res.status(400).json({ error: 'Mete non an' });
+    if (!looksLikeEmail(email)) return res.status(400).json({ error: 'Mete yon email ki bon' });
 
     const clash = await Instructor.findOne({ email });
-    if (clash) return res.status(409).json({ error: 'An instructor already uses that email' });
+    if (clash) return res.status(409).json({ error: 'Gen yon enstriktè ki deja gen email sa a' });
 
     const pw = Instructor.newPassword();
     const doc = new Instructor({ name, email, phone });
@@ -167,25 +167,25 @@ router.post('/admin', requirePin, async (req, res) => {
       temporaryPassword: pw
     });
   } catch (err) {
-    if (err.code === 11000) return res.status(409).json({ error: 'An instructor already uses that email' });
+    if (err.code === 11000) return res.status(409).json({ error: 'Gen yon enstriktè ki deja gen email sa a' });
     res.status(err.status || 500).json({ error: err.message });
   }
 });
 
 router.put('/admin/:id', requirePin, async (req, res) => {
   try {
-    if (!isId(req.params.id)) return res.status(400).json({ error: 'Bad id' });
+    if (!isId(req.params.id)) return res.status(400).json({ error: 'Idantifyan an pa bon' });
     const set = {};
     if (req.body.name !== undefined) {
       const n = String(req.body.name).trim();
-      if (!n) return res.status(400).json({ error: 'Name cannot be empty' });
+      if (!n) return res.status(400).json({ error: 'Non an pa ka vid' });
       set.name = n;
     }
     if (req.body.email !== undefined) {
       const e = String(req.body.email).trim().toLowerCase();
-      if (!looksLikeEmail(e)) return res.status(400).json({ error: 'A valid email is required' });
+      if (!looksLikeEmail(e)) return res.status(400).json({ error: 'Mete yon email ki bon' });
       const clash = await Instructor.findOne({ email: e, _id: { $ne: req.params.id } });
-      if (clash) return res.status(409).json({ error: 'An instructor already uses that email' });
+      if (clash) return res.status(409).json({ error: 'Gen yon enstriktè ki deja gen email sa a' });
       set.email = e;
     }
     if (req.body.phone !== undefined) set.phone = String(req.body.phone).trim();
@@ -193,7 +193,7 @@ router.put('/admin/:id', requirePin, async (req, res) => {
 
     const doc = await Instructor.findByIdAndUpdate(req.params.id, { $set: set }, { returnDocument: 'after' })
       .select(Instructor.PUBLIC_FIELDS);
-    if (!doc) return res.status(404).json({ error: 'Instructor not found' });
+    if (!doc) return res.status(404).json({ error: 'Nou pa jwenn enstriktè sa a' });
     res.json({ instructor: doc });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -203,9 +203,9 @@ router.put('/admin/:id', requirePin, async (req, res) => {
    browser it was open in. */
 router.post('/admin/:id/password', requirePin, async (req, res) => {
   try {
-    if (!isId(req.params.id)) return res.status(400).json({ error: 'Bad id' });
+    if (!isId(req.params.id)) return res.status(400).json({ error: 'Idantifyan an pa bon' });
     const doc = await Instructor.findById(req.params.id).select('+loginSalt +loginHash');
-    if (!doc) return res.status(404).json({ error: 'Instructor not found' });
+    if (!doc) return res.status(404).json({ error: 'Nou pa jwenn enstriktè sa a' });
     const pw = Instructor.newPassword();
     doc.setPassword(pw);
     doc.mustChangePassword = true;
@@ -219,17 +219,17 @@ router.post('/admin/:id/password', requirePin, async (req, res) => {
    confusing in the admin list. Unassign first, or deactivate instead. */
 router.delete('/admin/:id', requirePin, async (req, res) => {
   try {
-    if (!isId(req.params.id)) return res.status(400).json({ error: 'Bad id' });
+    if (!isId(req.params.id)) return res.status(400).json({ error: 'Idantifyan an pa bon' });
     const n = await Course.countDocuments({ instructorId: req.params.id });
     if (n > 0) {
       return res.status(400).json({
-        error: 'This instructor still has ' + n + ' course' + (n === 1 ? '' : 's') +
-               '. Reassign them first, or set the account inactive instead.',
+        error: 'Enstriktè sa a gen ' + n + ' kou toujou. Bay yon lòt moun yo anvan, ' +
+               'oswa fèmen kont lan olye ou efase l.',
         courses: n
       });
     }
     const doc = await Instructor.findByIdAndDelete(req.params.id);
-    if (!doc) return res.status(404).json({ error: 'Instructor not found' });
+    if (!doc) return res.status(404).json({ error: 'Nou pa jwenn enstriktè sa a' });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -239,13 +239,13 @@ router.post('/admin/assign', requirePin, async (req, res) => {
   try {
     const courseId = String(req.body.courseId || '');
     const instructorId = req.body.instructorId ? String(req.body.instructorId) : null;
-    if (!isId(courseId)) return res.status(400).json({ error: 'Bad course id' });
+    if (!isId(courseId)) return res.status(400).json({ error: 'Idantifyan kou a pa bon' });
 
     let who = null;
     if (instructorId) {
-      if (!isId(instructorId)) return res.status(400).json({ error: 'Bad instructor id' });
+      if (!isId(instructorId)) return res.status(400).json({ error: 'Idantifyan enstriktè a pa bon' });
       who = await Instructor.findById(instructorId).select(Instructor.PUBLIC_FIELDS);
-      if (!who) return res.status(404).json({ error: 'Instructor not found' });
+      if (!who) return res.status(404).json({ error: 'Nou pa jwenn enstriktè sa a' });
     }
     const set = { instructorId: instructorId ? new mongoose.Types.ObjectId(instructorId) : null };
     /* Keep the public name in step, but never blank an existing one when the
@@ -255,7 +255,7 @@ router.post('/admin/assign', requirePin, async (req, res) => {
 
     const course = await Course.findByIdAndUpdate(courseId, { $set: set }, { returnDocument: 'after' })
       .select('title instructor instructorId').lean();
-    if (!course) return res.status(404).json({ error: 'Course not found' });
+    if (!course) return res.status(404).json({ error: 'Nou pa jwenn kou sa a' });
     res.json({ success: true, course: Object.assign(course, { id: String(course._id) }) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -268,7 +268,7 @@ router.post('/login', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.ip || 'unknown';
   try {
     if (missCount(ip) >= MAX_MISSES) {
-      return res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' });
+      return res.status(429).json({ error: 'Twòp esè. Tann kèk minit epi eseye ankò.' });
     }
     const email = String(req.body.email || '').trim().toLowerCase();
     const password = String(req.body.password || '');
@@ -280,7 +280,7 @@ router.post('/login', async (req, res) => {
     const good = !!(me && me.active && me.checkPassword(password));
     if (!good) {
       recordMiss(ip);
-      return res.status(401).json({ error: 'Email or password is not right' });
+      return res.status(401).json({ error: 'Email oswa modpas la pa bon' });
     }
     clearMisses(ip);
     const token = await mintToken(me);
@@ -310,10 +310,10 @@ router.post('/password', requireInstructor, async (req, res) => {
     const current = String(req.body.currentPassword || '');
     const next = String(req.body.newPassword || '');
     if (!req.instructor.checkPassword(current)) {
-      return res.status(401).json({ error: 'Your current password is not right' });
+      return res.status(401).json({ error: 'Modpas aktyèl ou a pa bon' });
     }
     if (next.trim() === current.trim()) {
-      return res.status(400).json({ error: 'Choose a different password' });
+      return res.status(400).json({ error: 'Chwazi yon lòt modpas' });
     }
     req.instructor.setPassword(next);
     req.instructor.mustChangePassword = false;
@@ -356,7 +356,7 @@ router.get('/courses', requireInstructor, async (req, res) => {
 router.get('/courses/:id', requireInstructor, async (req, res) => {
   try {
     const course = await myCourse(req, req.params.id, true);
-    if (!course) return res.status(404).json({ error: 'Course not found' });
+    if (!course) return res.status(404).json({ error: 'Nou pa jwenn kou sa a' });
     const regs = await CourseRegistration.find({ course: course._id })
       .sort({ createdAt: -1 }).limit(1000).lean();
     const students = regs.map(studentRow);
@@ -386,20 +386,20 @@ router.post('/courses/:id/students/:ref/classroom', requireInstructor, async (re
   try {
     const want = String(req.body.status || '').trim();
     if (!['none', 'invited', 'active'].includes(want)) {
-      return res.status(400).json({ error: 'status must be none, invited or active' });
+      return res.status(400).json({ error: 'Eta a dwe none, invited oswa active' });
     }
     const course = await myCourse(req, req.params.id);
-    if (!course) return res.status(404).json({ error: 'Course not found' });
+    if (!course) return res.status(404).json({ error: 'Nou pa jwenn kou sa a' });
 
     /* 🔑 Scoped by course AS WELL as reference. A reference from another
        instructor's course must not be updatable by passing it here. */
     const reg = await CourseRegistration.findOne({
       referenceId: String(req.params.ref || ''), course: course._id
     });
-    if (!reg) return res.status(404).json({ error: 'Student not found on this course' });
+    if (!reg) return res.status(404).json({ error: 'Nou pa jwenn etidyan sa a sou kou sa a' });
 
     if (reg.status !== 'completed' && want !== 'none') {
-      return res.status(400).json({ error: 'This student has not paid yet.' });
+      return res.status(400).json({ error: 'Etidyan sa a poko peye.' });
     }
     const set = { classroomStatus: want };
     if (want === 'invited') { set.invitedAt = new Date(); set.invitedBy = 'instructor:' + req.instructor.email; }
@@ -419,7 +419,7 @@ router.post('/courses/:id/students/:ref/classroom', requireInstructor, async (re
 router.get('/courses/:id/emails', requireInstructor, async (req, res) => {
   try {
     const course = await myCourse(req, req.params.id);
-    if (!course) return res.status(404).json({ error: 'Course not found' });
+    if (!course) return res.status(404).json({ error: 'Nou pa jwenn kou sa a' });
     const regs = await CourseRegistration.find({ course: course._id, status: 'completed' })
       .sort({ createdAt: 1 }).select('email studentName classroomStatus').lean();
     const notYet = regs.filter(r => (r.classroomStatus || 'none') === 'none');
@@ -441,7 +441,7 @@ function csvCell(v) {
 router.get('/courses/:id/students.csv', requireInstructor, async (req, res) => {
   try {
     const course = await myCourse(req, req.params.id);
-    if (!course) return res.status(404).json({ error: 'Course not found' });
+    if (!course) return res.status(404).json({ error: 'Nou pa jwenn kou sa a' });
     const regs = await CourseRegistration.find({ course: course._id })
       .sort({ createdAt: 1 }).lean();
     const head = ['Non', 'Email (Google)', 'Telefon', 'Enskripsyon', 'Klas Google', 'Referans'];
