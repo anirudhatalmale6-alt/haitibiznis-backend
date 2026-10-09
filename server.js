@@ -70,6 +70,11 @@ app.use('/api/promo', require('./routes/promo'));
 const coursesRouter = require('./routes/courses');
 app.use('/api/courses', coursesRouter);
 
+/* Instructor logins. Each instructor sees only the courses whose
+   `instructorId` is their own, and nothing in that router can reach a price
+   or a payment. See routes/instructors.js. */
+app.use('/api/instructors', require('./routes/instructors'));
+
 /* `commit` is here because for months there was no way to tell from outside
  * which code was actually running. Render's push webhook had stopped firing,
  * the dashboard still said auto-deploy was on, and four commits sat on main

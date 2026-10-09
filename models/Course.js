@@ -13,7 +13,21 @@ const mongoose = require('mongoose');
 const courseSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true, maxlength: 140 },
   description: { type: String, default: '', maxlength: 4000 },
+  /* The instructor's name as it appears on the public course card. Kept a
+     plain string: it was here before logins existed, every course already has
+     one, and the name shown to a student is a label, not a foreign key. */
   instructor: { type: String, default: '', trim: true, maxlength: 120 },
+
+  /* 🔑 THE WHOLE INSTRUCTOR PERMISSION MODEL IS THIS ONE FIELD.
+     An instructor can reach a course if, and only if, this equals their _id.
+     There is no role, no permissions list and no "is admin" flag anywhere -
+     so there is nothing to set wrongly. Courses created before the module
+     existed have null here and belong to nobody until an admin assigns them,
+     which is the safe default: invisible beats visible-to-everyone. */
+  instructorId: {
+    type: mongoose.Schema.Types.ObjectId, ref: 'Instructor',
+    default: null, index: true
+  },
 
   /* Dates as strings, the same way Event stores them. A course that runs
      "15 Oct to 30 Nov" is a human arrangement, not a timestamp, and every
