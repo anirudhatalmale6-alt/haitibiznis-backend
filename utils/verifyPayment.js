@@ -50,18 +50,32 @@ async function askGateway(referenceId) {
  * the other three were started and abandoned. So reading `status` as payment,
  * or accepting either field, marks every abandoned checkout as paid.
  * Only trans_status === 'ok' is a payment. */
-function isConfirmed(data) {
+function isConfirmed(data, expectedAmount) {
   if (!data || typeof data !== 'object') return false;
-  return data.trans_status === 'ok';
+  if (data.trans_status !== 'ok') return false;
+  /* 🛑 16 Oct 2026: HOW MUCH was paid was never compared. The gateway's client
+     id is public and shared by four platforms, so a reference paid with less
+     than we asked for must never count (on MyPlopPlop a 20 HTG payment once
+     completed a 50,000 HTG top-up). Every caller passes what it charged;
+     less, or no readable amount, is NOT a payment. */
+  if (expectedAmount != null) {
+    const got = Number(data.montant);
+    if (!(Number.isFinite(got) && got + 0.5 >= Number(expectedAmount))) {
+      console.error('[PAYMENT AMOUNT MISMATCH] gateway reports ' + data.montant + ', we charged ' +
+        expectedAmount + ' - NOT treated as paid');
+      return false;
+    }
+  }
+  return true;
 }
 
 /* Convenience for the callers that only want a yes/no and want a refusal
  * logged rather than an exception. */
-async function paymentConfirmed(referenceId, context) {
+async function paymentConfirmed(referenceId, context, expectedAmount) {
   if (!referenceId) return { confirmed: false, provider: null };
   try {
     const provider = await askGateway(referenceId);
-    return { confirmed: isConfirmed(provider), provider };
+    return { confirmed: isConfirmed(provider, expectedAmount), provider };
   } catch (err) {
     console.error((context || 'payment check') + ': could not reach SolutionIP for ' +
       referenceId + ' - leaving it as it is. ' + err.message);

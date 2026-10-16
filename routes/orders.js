@@ -102,7 +102,7 @@ router.post('/webhook/:method', async (req, res) => {
 
     if (order.status === 'paid') return res.json({ received: true, alreadyPaid: true });
 
-    const { confirmed } = await paymentConfirmed(refference_id, 'order webhook');
+    const { confirmed } = await paymentConfirmed(refference_id, 'order webhook', order.totalAmount);
     if (confirmed) {
       order.status = 'paid';
       order.paidAt = new Date();
@@ -138,7 +138,7 @@ router.get('/verify', async (req, res) => {
     // It asks about the ORDER's own reference, which is what was sent to the
     // gateway when the payment was started - not sipTransactionId.
     if (order.status === 'pending_payment') {
-      const { confirmed } = await paymentConfirmed(order.referenceId, 'order verify');
+      const { confirmed } = await paymentConfirmed(order.referenceId, 'order verify', order.totalAmount);
       if (confirmed) {
         order.status = 'paid';
         order.paidAt = new Date();

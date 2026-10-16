@@ -215,7 +215,7 @@ async function reconcile(txn) {
         paidAmount: out.amount_total, paidCurrency: out.currency } }).catch(() => {});
     }
   } else {
-    confirmed = (await paymentConfirmed(txn.referenceId, 'ticket reconcile')).confirmed;
+    confirmed = (await paymentConfirmed(txn.referenceId, 'ticket reconcile', txn.totalAmount)).confirmed;
   }
   if (!confirmed) return txn;
   const paid = await markPaid(txn);
@@ -377,7 +377,7 @@ router.get('/verify', async (req, res) => {
     }
     const sipData = await askGateway(ref);
 
-    if (isConfirmed(sipData)) {
+    if (isConfirmed(sipData, txn.totalAmount)) {
       await markPaid(txn);
       const fresh = await Transaction.findById(txn._id);
       txn.paidAt = fresh.paidAt;
@@ -426,7 +426,7 @@ async function handleWebhook(req, res) {
                         provider: 'stripe' });
     }
 
-    const { confirmed } = await paymentConfirmed(ref, 'ticket webhook');
+    const { confirmed } = await paymentConfirmed(ref, 'ticket webhook', txn.totalAmount);
     if (!confirmed) {
       // A real gateway retry must not get a 500, but nothing is issued.
       console.error('ticket webhook: ' + ref + ' was announced as paid but the ' +

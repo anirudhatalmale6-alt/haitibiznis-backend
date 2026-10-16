@@ -194,7 +194,7 @@ async function reconcileReg(reg) {
         paidAmount: out.amount_total, paidCurrency: out.currency } }).catch(() => {});
     }
   } else {
-    confirmed = (await paymentConfirmed(reg.referenceId, 'course reconcile')).confirmed;
+    confirmed = (await paymentConfirmed(reg.referenceId, 'course reconcile', reg.amount)).confirmed;
   }
 
   if (!confirmed) return reg;
