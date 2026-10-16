@@ -24,7 +24,12 @@ app.use(cors({
   // organiser their correct code was wrong.
   allowedHeaders: ['Content-Type', 'x-admin-pin', 'x-door-code', 'x-manage-code']
 }));
-app.use(express.json({ limit: '15mb' }));
+/* 16 Oct 2026: the WhatsApp webhook must check Meta's signature, which is
+   computed over the EXACT bytes received - so those bytes are kept for that
+   one route (routes/whatsapp.js). */
+app.use(express.json({ limit: '15mb', verify: (req, res, buf) => {
+  if ((req.originalUrl || req.url || '').toLowerCase().startsWith('/api/whatsapp/webhook')) req.rawBody = buf;
+} }));
 
 // Escrow release, refunds, driver approval, editing or deleting somebody
 // else's event. See middleware/adminOnly.js for the list and for what was

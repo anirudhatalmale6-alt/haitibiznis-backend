@@ -73,6 +73,10 @@ const eventSchema = new mongoose.Schema({
   flyerUrl: String,
   inviteImage: String,
   tickets: [ticketSchema],
+  /* 16 Oct 2026: a short lock so that only ONE buyer at a time is checked
+     against the seats left (see routes/payments.js, lockTickets). Expires by
+     itself after a few seconds, so a crash can never freeze sales. */
+  ticketLock: { type: Date, default: null },
   paymentMethods: {
     moncash: { type: Boolean, default: false },
     natcash: { type: Boolean, default: false },

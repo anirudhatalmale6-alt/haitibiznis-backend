@@ -21,6 +21,52 @@ const SIP_CLIENT = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
    split lives in myplopplop-backend/services/referral.js under 'tikelakay'. */
 const PLATFORM_FEE_PCT = 0.075;
 
+/* ═══ NO OVERSELLING (16 Oct 2026) ═════════════════════════════════════════
+   Jeffery: "Preventing Tikè Lakay from overselling tickets when multiple
+   customers pay simultaneously."
+   The seat check used to compare `sold` only - and `sold` only moves when a
+   payment CONFIRMS. So with 1 seat left, ten people could each open a MonCash
+   page for it and all ten pay: ten tickets for one chair.
+   Now:
+     - an unpaid checkout HOLDS its seats for HOLD_MIN minutes (a MonCash page
+       expires after 10; a card checkout is made to expire after 31), so seats
+       left = qty - sold - held;
+     - the check and the hold are done by ONE buyer at a time per event
+       (lockTickets), so two people can never both take the last seat;
+     - a checkout that fails or is abandoned frees its seats by itself (failed
+       ones at once, abandoned ones when the hold runs out). */
+const mongoose = require('mongoose');
+const HOLD_MIN = 35;
+const CARD_EXPIRY_SEC = 31 * 60;
+const LOCK_MS = 8000;
+
+async function lockTickets(eventId) {
+  for (let i = 0; i < 60; i++) {
+    const stamp = new Date(Date.now() + LOCK_MS);
+    const got = await Event.findOneAndUpdate(
+      { _id: eventId, $or: [{ ticketLock: null }, { ticketLock: { $exists: false } }, { ticketLock: { $lt: new Date() } }] },
+      { $set: { ticketLock: stamp } });
+    if (got) {
+      let done = false;
+      return async () => {
+        if (done) return; done = true;
+        await Event.updateOne({ _id: eventId, ticketLock: stamp }, { $set: { ticketLock: null } }).catch(() => {});
+      };
+    }
+    await new Promise(r => setTimeout(r, 80 + Math.floor(Math.random() * 80)));
+  }
+  return null;
+}
+
+async function seatsHeld(eventId, ticketName) {
+  const since = new Date(Date.now() - HOLD_MIN * 60000);
+  const agg = await Transaction.aggregate([
+    { $match: { event: new mongoose.Types.ObjectId(String(eventId)), ticketName,
+                status: 'pending', createdAt: { $gte: since } } },
+    { $group: { _id: null, n: { $sum: { $ifNull: ['$qty', 1] } } } }]);
+  return agg.length ? agg[0].n : 0;
+}
+
 function genRef() {
   return 'TL-' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substring(2, 6).toUpperCase();
 }
@@ -33,6 +79,17 @@ async function countSold(txn) {
     { _id: txn.event, 'tickets.name': txn.ticketName },
     { $inc: { 'tickets.$.sold': txn.qty || 1 } }
   );
+  /* Only possible if a payment is confirmed long after its hold ran out
+     (gateway down for half an hour). The buyer paid, so they keep the ticket -
+     but the organiser must hear about it, not discover it at the door. */
+  try {
+    const ev = await Event.findById(txn.event, { title: 1, tickets: 1 });
+    const t = ev && ev.tickets.find(x => x.name === txn.ticketName);
+    if (t && t.qty > 0 && t.sold > t.qty) {
+      console.error('[TIKELAKAY OVERSOLD] ' + ev.title + ' / ' + t.name + ': ' + t.sold + ' sold for ' +
+                    t.qty + ' places (late confirmation of ' + txn.referenceId + ')');
+    }
+  } catch (e) {}
 }
 
 /* Mark a ticket paid, once. The find-and-update is the whole point: it is
@@ -227,6 +284,7 @@ async function reconcile(txn) {
 }
 
 router.post('/buy-ticket', async (req, res) => {
+  let release = null;
   try {
     const { eventId, ticketName, qty, buyerName, buyerPhone, buyerEmail, paymentMethod, koutyeCode } = req.body;
     if (!eventId || !ticketName || !paymentMethod) {
@@ -245,8 +303,22 @@ router.post('/buy-ticket', async (req, res) => {
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 20) {
       return res.status(400).json({ error: 'Choose between 1 and 20 tickets.' });
     }
-    if (ticket.qty > 0 && ticket.sold + quantity > ticket.qty) {
-      return res.status(400).json({ error: 'Not enough tickets available' });
+    /* One buyer at a time from here until their checkout is recorded. */
+    if (ticket.qty > 0) {
+      release = await lockTickets(event._id);
+      if (!release) {
+        return res.status(503).json({ error: 'Anpil moun ap achte an menm tan. Eseye ankò nan kèk segonn. / Too many people buying at once - try again in a few seconds.' });
+      }
+      const fresh = await Event.findById(eventId);
+      const t = fresh && fresh.tickets.find(x => x.name === ticketName);
+      if (!t) return res.status(404).json({ error: 'Ticket type not found' });
+      const held = await seatsHeld(event._id, ticketName);
+      const left = Math.max(0, t.qty - t.sold - held);
+      if (quantity > left) {
+        return res.status(400).json({
+          error: left > 0 ? 'Only ' + left + ' ticket(s) left.' : 'Not enough tickets available',
+          left, sold_out: left === 0 });
+      }
     }
 
     const subtotal = ticket.price * quantity;
@@ -285,6 +357,8 @@ router.post('/buy-ticket', async (req, res) => {
       phoneKey: phoneKey(buyerPhone)
     });
     await txn.save();
+    /* The pending checkout now holds its seats - the next buyer can be checked. */
+    if (release) { await release(); release = null; }
 
     const returnUrl = `https://haitibiznis.com/ticket.html?ref=${refId}`;
 
@@ -307,7 +381,8 @@ router.post('/buy-ticket', async (req, res) => {
         successUrl: returnUrl,
         cancelUrl: `https://haitibiznis.com/event.html?id=${eventId}`,
         email: buyerEmail || undefined,
-        metadata: { event: String(eventId), ticket: ticketName, qty: String(quantity) }
+        metadata: { event: String(eventId), ticket: ticketName, qty: String(quantity) },
+        expiresInSec: CARD_EXPIRY_SEC
       });
       if (!sess.ok) {
         console.error('Stripe checkout failed for ' + refId + ': ' + sess.error);
@@ -358,6 +433,8 @@ router.post('/buy-ticket', async (req, res) => {
   } catch (err) {
     console.error('Buy ticket error:', err.message);
     res.status(500).json({ error: err.message });
+  } finally {
+    if (release) await release();
   }
 });
 

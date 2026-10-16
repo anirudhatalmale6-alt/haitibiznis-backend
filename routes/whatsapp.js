@@ -5,7 +5,27 @@ const Driver = require('../models/Driver');
 const Ride = require('../models/Ride');
 const Refund = require('../models/Refund');
 
+const crypto = require('crypto');
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'msouwout_verify_2026';
+
+/* 🛑 16 Oct 2026 (Jeffery: "Securing the WhatsApp bot using Meta's app secret
+   and webhook signature verification"). This webhook acted on ANY JSON posted
+   to it - anybody could send "messages" as any phone number and the bot would
+   act on them (book, look up, open refund requests).
+   Meta signs every delivery: X-Hub-Signature-256 = "sha256=" + HMAC-SHA256 of
+   the raw body with the APP SECRET (Meta for Developers > App settings > Basic).
+   ⛔ FAILS CLOSED: with no WHATSAPP_APP_SECRET set, nothing is accepted. The
+   Cloud API is not connected yet, so this costs nothing today, and the day it
+   is connected the secret goes in at the same time. */
+function metaSignatureOk(req) {
+  const secret = process.env.WHATSAPP_APP_SECRET || '';
+  if (!secret || !req.rawBody) return false;
+  const got = String(req.headers['x-hub-signature-256'] || '');
+  if (!/^sha256=[0-9a-f]{64}$/i.test(got)) return false;
+  const want = 'sha256=' + crypto.createHmac('sha256', secret).update(req.rawBody).digest('hex');
+  const a = Buffer.from(got.toLowerCase()), b = Buffer.from(want);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 const ACCESS_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_ID;
 const WHATSAPP_NUMBER = '+509 4685 9702';
@@ -117,6 +137,11 @@ router.get('/webhook', (req, res) => {
 // --- Webhook handler (POST) ---
 
 router.post('/webhook', async (req, res) => {
+  if (!metaSignatureOk(req)) {
+    console.warn('[WHATSAPP] webhook refused: ' + (process.env.WHATSAPP_APP_SECRET
+      ? 'bad or missing Meta signature' : 'WHATSAPP_APP_SECRET is not set'));
+    return res.sendStatus(401);
+  }
   res.sendStatus(200);
 
   try {

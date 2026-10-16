@@ -83,7 +83,7 @@ function toMinorUnit(amount, currency) {
 }
 
 async function createCheckout({ amount, currency, label, reference, successUrl,
-                                cancelUrl, email, metadata }) {
+                                cancelUrl, email, metadata, expiresInSec }) {
   const cur = String(currency || 'HTG').toLowerCase();
   const body = {
     mode: 'payment',
@@ -103,6 +103,9 @@ async function createCheckout({ amount, currency, label, reference, successUrl,
     metadata: Object.assign({ reference: String(reference) }, metadata || {})
   };
   if (email) body.customer_email = email;
+  /* 16 Oct 2026: a ticket checkout must not stay payable longer than its seat
+     is held for (Stripe's minimum is 30 minutes; the default is 24 hours). */
+  if (expiresInSec) body.expires_at = Math.floor(Date.now() / 1000) + Math.max(1800, Number(expiresInSec));
 
   const out = await call('/checkout/sessions', 'POST', body);
   if (!out.ok) return out;
