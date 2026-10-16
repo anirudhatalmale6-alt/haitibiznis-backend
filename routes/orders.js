@@ -18,6 +18,16 @@ function genPin() {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
 
+/* 🛑 16 Oct 2026: SWITCHED OFF. This old escrow-order API is used by no page
+   (MyPlopPlop orders live on myplopplop-api) and pays nobody - but anyone
+   could call it: create an order with their own prices, mark an unpaid order
+   delivered, and "release" or "refund" escrow. Every write route answers 410
+   until it is needed again; reading an existing order still works. */
+router.use((req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD') return next();
+  return res.status(410).json({ error: 'This order service is not in use.' });
+});
+
 // Create order and initiate payment
 router.post('/create', async (req, res) => {
   try {
