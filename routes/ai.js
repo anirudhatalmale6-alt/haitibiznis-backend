@@ -197,7 +197,20 @@ function parseOcrText(text) {
   return result;
 }
 
-router.post('/scan-flyer', upload.single('flyer'), async (req, res) => {
+/* 16 Oct 2026: each scan is paid for (AI credit) and the route needs no
+   login - the public create-event page uses it. 10 scans per hour per
+   address is plenty for an organiser and stops a script draining the credit. */
+const SCANS = new Map();
+function scanLimit(req, res, next) {
+  const ip = require('../utils/clientIp')(req), now = Date.now();
+  const list = (SCANS.get(ip) || []).filter(function (t) { return now - t < 3600 * 1000; });
+  if (list.length >= 10) return res.status(429).json({ error: 'Too many scans. Try again in an hour, or type the details.' });
+  list.push(now); SCANS.set(ip, list);
+  if (SCANS.size > 5000) SCANS.clear();
+  next();
+}
+
+router.post('/scan-flyer', scanLimit, upload.single('flyer'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No image uploaded' });

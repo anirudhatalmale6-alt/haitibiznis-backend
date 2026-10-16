@@ -509,7 +509,10 @@ async function handleImage(phone, contactName) {
 
 // --- Test endpoint ---
 
-router.post('/test', async (req, res) => {
+/* 16 Oct 2026: admin console PIN only. It was public: anybody could act as
+   any phone number in the bot (file a refund on someone else's ride) and read
+   that person's chat session back. */
+router.post('/test', require('../utils/consolePin').requirePin, async (req, res) => {
   const { phone, message } = req.body;
   if (!phone || !message) return res.status(400).json({ error: 'phone and message required' });
 
