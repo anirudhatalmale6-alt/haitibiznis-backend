@@ -58,9 +58,24 @@ const ADMIN_ONLY = [
   ['POST', /^\/api\/pos\/devices\/block-others$/]
 ];
 
+/* 🛑 16 Oct 2026: Express matches routes IGNORING CASE and with or without a
+   trailing slash, but these patterns were tested against the raw path - so
+   GET /api/Orders returned every order with no PIN at all. The path is now
+   normalised the way Express sees it (lower case, no trailing slash, no
+   doubled slashes, percent-decoded) and HEAD is treated as GET. */
+function normalisePath(path) {
+  let p = String(path || '').split('?')[0];
+  try { p = decodeURIComponent(p); } catch (e) { /* keep the raw path */ }
+  p = p.toLowerCase().replace(/\/{2,}/g, '/');
+  if (p.length > 1) p = p.replace(/\/+$/, '');
+  return p;
+}
+
 function isAdminOnly(method, path) {
+  const m0 = String(method || '').toUpperCase() === 'HEAD' ? 'GET' : String(method || '').toUpperCase();
+  const p = normalisePath(path);
   for (const [m, re] of ADMIN_ONLY) {
-    if (m === method && re.test(path)) return true;
+    if (m === m0 && (re.test(p) || re.test(p + '/'))) return true;
   }
   return false;
 }
@@ -70,4 +85,4 @@ function adminOnly(req, res, next) {
   return requirePin(req, res, next);
 }
 
-module.exports = { adminOnly, isAdminOnly, ADMIN_ONLY };
+module.exports = { adminOnly, isAdminOnly, normalisePath, ADMIN_ONLY };
