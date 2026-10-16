@@ -239,7 +239,12 @@ router.post('/buy-ticket', async (req, res) => {
     const ticket = event.tickets.find(t => t.name === ticketName);
     if (!ticket) return res.status(404).json({ error: 'Ticket type not found' });
 
-    const quantity = parseInt(qty) || 1;
+    /* 16 Oct 2026: a whole number from 1 to 20. "-50" used to reopen 50 places
+       on a capped free event, and 1e9 multiplied an agent's commission. */
+    const quantity = (qty == null || qty === '') ? 1 : Number(qty);
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 20) {
+      return res.status(400).json({ error: 'Choose between 1 and 20 tickets.' });
+    }
     if (ticket.qty > 0 && ticket.sold + quantity > ticket.qty) {
       return res.status(400).json({ error: 'Not enough tickets available' });
     }
@@ -507,7 +512,7 @@ router.get('/my-tickets', async (req, res) => {
     if (!key || key.length < 8) {
       return res.status(400).json({ error: 'A full phone number is required', tickets: [] });
     }
-    const ip = String(req.headers['x-forwarded-for'] || req.ip || 'unknown').split(',')[0].trim();
+    const ip = require('../utils/clientIp')(req);
     if (lookupMisses(ip) >= LOOKUP_MAX) {
       return res.status(429).json({ error: 'Too many lookups. Try again in a few minutes.', tickets: [] });
     }

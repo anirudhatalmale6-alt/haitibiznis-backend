@@ -715,7 +715,7 @@ router.get('/my-courses', async (req, res) => {
     if (!key || key.length < 8) {
       return res.status(400).json({ error: 'Mete nimewo telefòn ou an konplè.', courses: [] });
     }
-    const ip = String(req.headers['x-forwarded-for'] || req.ip || 'unknown').split(',')[0].trim();
+    const ip = require('../utils/clientIp')(req);
     if (missCount(ip) >= LOOKUP_MAX) {
       return res.status(429).json({ error: 'Twòp rechèch. Eseye ankò nan kèk minit.', courses: [] });
     }

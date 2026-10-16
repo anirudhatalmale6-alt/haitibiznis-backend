@@ -265,7 +265,7 @@ router.post('/admin/assign', requirePin, async (req, res) => {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 router.post('/login', async (req, res) => {
-  const ip = req.headers['x-forwarded-for'] || req.ip || 'unknown';
+  const ip = require('../utils/clientIp')(req);
   try {
     if (missCount(ip) >= MAX_MISSES) {
       return res.status(429).json({ error: 'Twòp esè. Tann kèk minit epi eseye ankò.' });
