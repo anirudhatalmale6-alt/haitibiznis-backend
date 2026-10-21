@@ -79,6 +79,8 @@ app.use('/api/courses', coursesRouter);
    `instructorId` is their own, and nothing in that router can reach a price
    or a payment. See routes/instructors.js. */
 app.use('/api/instructors', require('./routes/instructors'));
+/* Certified LajanMaker agents: the badge QR's verification page + its console. */
+app.use('/api/agents', require('./routes/agents'));
 
 /* `commit` is here because for months there was no way to tell from outside
  * which code was actually running. Render's push webhook had stopped firing,

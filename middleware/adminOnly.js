@@ -55,7 +55,16 @@ const ADMIN_ONLY = [
    * can only ever write the display fields of its own row. */
   ['GET', /^\/api\/pos\/devices\/?$/],
   ['POST', /^\/api\/pos\/devices\/[^/]+\/(status|grant)$/],
-  ['POST', /^\/api\/pos\/devices\/block-others$/]
+  ['POST', /^\/api\/pos\/devices\/block-others$/],
+
+  /* 21 Oct 2026: the certified-agent console (routes/agents.js). Approving an
+   * agent is what makes a badge say VERIFYE, so it takes the console code here
+   * as well as inside the router. */
+  ['GET', /^\/api\/agents\/admin(\/.*)?$/],
+  ['POST', /^\/api\/agents\/admin(\/.*)?$/],
+  ['PATCH', /^\/api\/agents\/admin(\/.*)?$/],
+  ['PUT', /^\/api\/agents\/admin(\/.*)?$/],
+  ['DELETE', /^\/api\/agents\/admin(\/.*)?$/]
 ];
 
 /* 🛑 16 Oct 2026: Express matches routes IGNORING CASE and with or without a
