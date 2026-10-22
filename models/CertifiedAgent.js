@@ -44,6 +44,10 @@ const agentSchema = new mongoose.Schema({
   status: { type: String, enum: ['pending', 'active', 'suspended', 'revoked'], default: 'pending', index: true },
   statusNote: { type: String, default: '', maxlength: 300 },
   source: { type: String, enum: ['exam', 'reissue', 'admin'], default: 'exam' },
+  /* false only when a console user saved a PRINTED number that the name + date
+     could not reproduce (typo on the original badge, date unknown). Shown in
+     the console so nobody mistakes it for a computed match. */
+  idMatched: { type: Boolean, default: true },
 
   photo: { type: Buffer, select: false },
   photoMime: { type: String, default: '' },
@@ -66,6 +70,20 @@ agentSchema.methods.publicState = function (now) {
 };
 
 agentSchema.statics.SERVICES = SERVICES;
+
+/* Which day of the ID's year turns this name into this printed number? The
+   badges made on the re-issue page used whatever date was in the box - often
+   that day, not the exam day - so Jennifer may not know it. 366 hashes. */
+agentSchema.statics.findDate = function (name, agentId) {
+  const m = String(agentId || '').match(/^LMA-(\d{4})-\d{6}$/);
+  if (!m) return null;
+  const y = +m[1];
+  for (let d = new Date(Date.UTC(y, 0, 1)); d.getUTCFullYear() === y; d.setUTCDate(d.getUTCDate() + 1)) {
+    const ymd = d.toISOString().slice(0, 10);
+    if (this.certNumber(name, ymd) === agentId) return ymd;
+  }
+  return null;
+};
 
 /* Same number the exam prints: FNV-1a over "name lower-cased, spaces folded|
    Date.toDateString()". The date is built from Y-M-D as a LOCAL date, exactly

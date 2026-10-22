@@ -144,7 +144,7 @@ function adminView(a) {
     agentId: a.agentId, name: a.name, phone: a.phone, city: a.city, sponsor: a.sponsor,
     referralCode: a.referralCode, services: a.services, certifiedAt: a.certifiedAt,
     expiresAt: a.expiresAt, status: a.status, state: a.publicState(), statusNote: a.statusNote,
-    source: a.source, photo: !!a.photoAt, approvedAt: a.approvedAt, submissions: a.submissions,
+    source: a.source, idMatched: a.idMatched !== false, photo: !!a.photoAt, approvedAt: a.approvedAt, submissions: a.submissions,
     createdAt: a.createdAt, updatedAt: a.updatedAt, history: (a.history || []).slice(-10)
   };
 }
@@ -164,20 +164,42 @@ router.get('/admin/list', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+/* Register an agent by hand - mostly the badges ALREADY PRINTED before the
+   registry existed (Jeffery, 22 Oct: "No new numbers should be generated").
+   With the printed number: the name must reproduce it, on the date given or on
+   ANY day of that year (found automatically). If it cannot - a typo on the
+   original badge - the console may still keep the printed number with
+   `force`, flagged idMatched:false. Either way it is saved PENDING: an Agent
+   ID alone never proves anything. */
 router.post('/admin', async (req, res) => {
   try {
     const b = req.body || {};
-    const agentId = CertifiedAgent.certNumber(String(b.name || ''), String(b.date || ''));
-    if (!agentId || !String(b.name || '').trim()) return res.status(400).json({ error: 'name_and_date_required' });
+    const name = String(b.name || '');
+    if (!name.trim()) return res.status(400).json({ error: 'name_required' });
+    let ymd = /^\d{4}-\d{2}-\d{2}$/.test(String(b.date || '')) ? String(b.date) : '';
+    let agentId, idMatched = true;
+    if (b.printedId) {
+      agentId = normId(b.printedId).replace(/\s+/g, '');
+      if (!ID_RE.test(agentId)) return res.status(400).json({ error: 'bad_id' });
+      if (!(ymd && CertifiedAgent.certNumber(name, ymd) === agentId)) {
+        const found = CertifiedAgent.findDate(name, agentId);
+        if (found) ymd = found;
+        else if (b.force === true && ymd) idMatched = false;
+        else return res.status(422).json({ error: 'no_match', agentId });
+      }
+    } else {
+      agentId = CertifiedAgent.certNumber(name, ymd);
+      if (!agentId) return res.status(400).json({ error: 'name_and_date_required' });
+    }
     if (await CertifiedAgent.exists({ agentId })) return res.status(409).json({ error: 'exists', agentId });
-    const m = String(b.date).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     const a = await CertifiedAgent.create({
-      agentId, name: String(b.name).trim().replace(/\s+/g, ' '),
+      agentId, name: name.trim().replace(/\s+/g, ' '), idMatched,
       phone: String(b.phone || '').trim().slice(0, 40), source: 'admin',
       certifiedAt: new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 12)), status: 'pending',
-      history: [{ action: 'created', note: 'console' }]
+      history: [{ action: 'created', note: b.printedId ? (idMatched ? 'printed badge, number matched' : 'printed badge, number kept as printed (no match)') : 'console' }]
     });
-    res.json({ agent: adminView(a) });
+    res.json({ agent: adminView(a), dateUsed: ymd });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
