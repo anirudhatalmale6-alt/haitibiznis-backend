@@ -37,7 +37,13 @@ const posTrialSchema = new mongoose.Schema({
   /* How many times this number has asked. Useful for spotting somebody
      reinstalling repeatedly to look for a new trial. */
   seenCount: { type: Number, default: 1 },
-  lastSeen: { type: Date, default: Date.now }
+  lastSeen: { type: Date, default: Date.now },
+
+  /* 22 Oct 2026: set when the Ajan Pilòt console gave this number its free
+     days (models/AjanPilot.js). A row the console created before the phone
+     ever asked has seenCount 0 and lastSeen null - "never opened the app" is
+     an answer the console shows, so it must not be faked by a default. */
+  pilotAgentId: { type: String, default: '' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('PosTrial', posTrialSchema);
