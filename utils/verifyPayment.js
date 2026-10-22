@@ -21,11 +21,14 @@ const SIP_CLIENT = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
 /* Returns the gateway's answer, or throws. Never returns a made-up "paid".
  * A body that is not JSON is an error, not an empty result - that is exactly
  * how the broken URL went unnoticed. */
-async function askGateway(referenceId) {
+async function askGateway(referenceId, clientId) {
+  /* 22 Oct 2026: a LajanMaker POS can be set to its own merchant id; its
+     sales are asked about under that id (same gateway, same rules). */
+  const client = /^pp_[a-z0-9]{4,40}$/i.test(String(clientId || '')) ? String(clientId) : SIP_CLIENT;
   const res = await fetch(SIP_URL + '/api/paiement-verify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_id: SIP_CLIENT, refference_id: referenceId })
+    body: JSON.stringify({ client_id: client, refference_id: referenceId })
   });
   const text = await res.text();
   let data;
@@ -71,10 +74,10 @@ function isConfirmed(data, expectedAmount) {
 
 /* Convenience for the callers that only want a yes/no and want a refusal
  * logged rather than an exception. */
-async function paymentConfirmed(referenceId, context, expectedAmount) {
+async function paymentConfirmed(referenceId, context, expectedAmount, clientId) {
   if (!referenceId) return { confirmed: false, provider: null };
   try {
-    const provider = await askGateway(referenceId);
+    const provider = await askGateway(referenceId, clientId);
     return { confirmed: isConfirmed(provider, expectedAmount), provider };
   } catch (err) {
     console.error((context || 'payment check') + ': could not reach SolutionIP for ' +

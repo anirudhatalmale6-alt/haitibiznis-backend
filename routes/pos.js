@@ -226,4 +226,177 @@ router.post('/devices/block-others', async (req, res) => {
   }
 });
 
+/* ═══ SALES SYNC — every LajanMaker POS sale reaches the server ═══════════════
+ *
+ * Jeffery, 22 Oct 2026 (GO): automatic sync, offline sales sent when the
+ * signal returns, no duplicates, attribution to the Ajan's approved code,
+ * recorded vs CONFIRMED paid, cancellations and refunds (administrators
+ * only, reason + date + original sale + administrator, cancelled ≠
+ * refunded, never an automatic refund), no commission twice.
+ *
+ *   POST /api/pos/sales        public, like /hello: a phone sends its own
+ *                              sales {deviceId, agentPhone, sales:[…]}; a sale
+ *                              already here is UPDATED (by rev), never added
+ *                              twice; answers each sale's server state.
+ *   POST /api/pos/sales/void   console code: {deviceId, saleId, kind:
+ *                              'cancel'|'refund', reason, by, amount?, sale?}
+ *
+ * ⛔ The phone can never set state, cancellation, refunds or "confirmed":
+ *    those fields are not read from the upload at all.
+ * ⛔ Nothing here creates a commission or moves money.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+const PosSale = require('../models/PosSale');
+const CertifiedAgent = require('../models/CertifiedAgent');
+const { paymentConfirmed } = require('../utils/verifyPayment');
+const { requirePin } = require('../utils/consolePin');
+
+const SALE_ID_RE = /^[A-Za-z0-9_-]{2,32}$/;
+const ELECTRONIC = ['moncash', 'natcash', 'mc', 'nc', 'pix'];
+const num = (v, max) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= max ? Math.round(n * 100) / 100 : 0; };
+
+/* A small per-address brake: a phone syncs a few times a minute at most. */
+const syncHits = new Map();
+function tooFast(ip) {
+  const now = Date.now(), w = syncHits.get(ip) || [];
+  const recent = w.filter((t) => now - t < 60000); recent.push(now); syncHits.set(ip, recent);
+  if (syncHits.size > 5000) syncHits.clear();
+  return recent.length > 60;
+}
+
+async function agentForPhone(key) {
+  if (!key || key.length < 8) return null;
+  const re = new RegExp(key.split('').join('[^0-9]*') + '[^0-9]*$');
+  const list = await CertifiedAgent.find({ phone: re, status: 'active' }).select('agentId referralCode').limit(2).lean();
+  return list.length === 1 ? list[0] : null;      // two badges on one number: attribute to neither
+}
+
+function wantsCheck(s) {
+  return !!s.payRef && ELECTRONIC.indexOf(String(s.payment || '').toLowerCase()) >= 0 && s.amount > 0;
+}
+
+/* Ask the gateway. Only trans_status 'ok' for at least the amount confirms. */
+async function checkPayment(doc) {
+  if (!doc || !wantsCheck(doc) || doc.confirm.state === 'confirmed') return doc;
+  const r = await paymentConfirmed(doc.payRef, 'pos sale ' + doc.saleId, doc.amount, doc.payClient);
+  const set = { 'confirm.checkedAt': new Date(), 'confirm.tries': (doc.confirm.tries || 0) + 1 };
+  if (r.confirmed) { set['confirm.state'] = 'confirmed'; set['confirm.amount'] = Number(r.provider && r.provider.montant) || doc.amount; }
+  else if (r.provider && r.provider.status === true && r.provider.trans_status && r.provider.trans_status !== 'ok' && set['confirm.tries'] >= 6) set['confirm.state'] = 'not_paid';
+  else set['confirm.state'] = 'pending';
+  return PosSale.findOneAndUpdate({ _id: doc._id }, { $set: set }, { new: true });
+}
+
+function stateOf(d) {
+  return { id: d.saleId, rev: d.rev, state: d.state, confirmed: d.confirm.state === 'confirmed', refunded: d.refunded || 0 };
+}
+
+async function upsertSale(deviceId, key, agent, raw) {
+  const saleId = clip(raw.id, 32);
+  if (!SALE_ID_RE.test(saleId)) return null;
+  const soldAt = new Date(raw.ts);
+  if (isNaN(soldAt)) return null;
+  const rev = Math.max(1, Math.floor(Number(raw.rev) || 1));
+  const fields = {
+    staff: clip(raw.staff, 40), type: clip(raw.type, 16) || 'sale', module: clip(raw.module, 40), service: clip(raw.svcName, 80),
+    amount: num(raw.amount, 10000000), currency: clip(raw.currency, 6) || 'HTG', payment: clip(raw.payment, 16),
+    payStatus: clip(raw.payStatus, 12), payRef: clip(raw.payRef, 64), payClient: clip(raw.payClient, 48),
+    posShare: num(raw.posShare, 10000000), posPct: num(raw.posPct, 100), status: clip(raw.status, 12), soldAt, rev
+  };
+  const have = await PosSale.findOne({ deviceId, saleId });
+  if (have) {
+    if (rev <= have.rev) return have;                  // already have this version (or newer)
+    /* An amount the gateway already confirmed is not rewritten by the phone. */
+    if (have.confirm.state === 'confirmed') { delete fields.amount; delete fields.payRef; delete fields.payment; }
+    const set = Object.assign({}, fields);
+    if (!have.agentId && agent) { set.agentId = agent.agentId; set.referralCode = agent.referralCode || ''; }
+    if (!have.phoneKey && key) set.phoneKey = key;
+    const upd = await PosSale.findOneAndUpdate({ _id: have._id, rev: { $lt: rev } }, { $set: set }, { new: true });
+    return upd || await PosSale.findById(have._id);    // a newer version won the race
+  }
+  try {
+    return await PosSale.create(Object.assign({ deviceId, saleId, phoneKey: key || '',
+      agentId: agent ? agent.agentId : '', referralCode: agent ? (agent.referralCode || '') : '',
+      confirm: { state: wantsCheck(fields) ? 'pending' : 'none' },
+      history: [{ action: 'synced', note: 'rev ' + rev }] }, fields));
+  } catch (e) {
+    if (e && e.code === 11000) return PosSale.findOne({ deviceId, saleId });   // two uploads raced
+    throw e;
+  }
+}
+
+router.post('/sales', async (req, res) => {
+  try {
+    if (tooFast(req.ip)) return res.status(429).json({ error: 'slow down' });
+    const b = req.body || {};
+    const deviceId = clip(b.deviceId, 64);
+    if (!ID_RE.test(deviceId)) return res.status(400).json({ error: 'bad deviceId' });
+    const sales = Array.isArray(b.sales) ? b.sales.slice(0, 100) : [];
+    const key = phoneKey(b.agentPhone);
+    const agent = await agentForPhone(key);
+    const out = [];
+    for (const raw of sales) {
+      let d = await upsertSale(deviceId, key, agent, raw || {});
+      if (!d) { out.push({ id: raw && raw.id, error: 'bad sale' }); continue; }
+      if (d.confirm.state === 'pending' && (d.confirm.tries || 0) === 0) d = await checkPayment(d);
+      out.push(stateOf(d));
+    }
+    res.json({ ok: true, attributed: !!agent, sales: out });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/sales/void', requirePin, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const deviceId = clip(b.deviceId, 64), saleId = clip(b.saleId, 32);
+    const kind = b.kind === 'refund' ? 'refund' : b.kind === 'cancel' ? 'cancel' : '';
+    const reason = String(b.reason || '').trim().slice(0, 300);
+    const by = String(b.by || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+    if (!ID_RE.test(deviceId) || !SALE_ID_RE.test(saleId)) return res.status(400).json({ error: 'bad sale' });
+    if (!kind) return res.status(400).json({ error: 'bad kind' });
+    if (reason.length < 3) return res.status(400).json({ error: 'reason_required' });
+    if (by.length < 2) return res.status(400).json({ error: 'name_required' });
+    let d = await PosSale.findOne({ deviceId, saleId });
+    if (!d && b.sale) {                               // not synced yet: take it from the phone first
+      const key = phoneKey(b.agentPhone);
+      d = await upsertSale(deviceId, key, await agentForPhone(key), Object.assign({}, b.sale, { id: saleId }));
+    }
+    if (!d) return res.status(404).json({ error: 'no such sale' });
+    const now = new Date();
+    if (kind === 'cancel') {
+      if (d.state === 'cancelled') return res.status(409).json({ error: 'already_cancelled' });
+      if (d.state === 'refunded') return res.status(409).json({ error: 'already_refunded' });
+      d = await PosSale.findOneAndUpdate({ _id: d._id, state: 'active' },
+        { $set: { state: 'cancelled', cancelled: { at: now, by, reason } },
+          $push: { history: { at: now, by, action: 'cancelled', note: reason } } }, { new: true });
+      if (!d) return res.status(409).json({ error: 'changed, try again' });
+    } else {
+      if (d.state === 'cancelled') return res.status(409).json({ error: 'already_cancelled' });
+      const left = Math.max(0, (d.amount || 0) - (d.refunded || 0));
+      const amount = b.amount == null || b.amount === '' ? left : num(b.amount, 10000000);
+      if (!(amount > 0) || amount > left + 0.001) return res.status(400).json({ error: 'bad_amount', left });
+      d = await PosSale.findOneAndUpdate({ _id: d._id, state: { $ne: 'cancelled' }, refunded: d.refunded || 0 },
+        { $set: { state: 'refunded' }, $inc: { refunded: amount },
+          $push: { refunds: { at: now, by, reason, amount }, history: { at: now, by, action: 'refunded', note: amount + ' · ' + reason } } }, { new: true });
+      if (!d) return res.status(409).json({ error: 'changed, try again' });
+    }
+    console.warn('[POS] ' + kind + ' ' + deviceId + '/' + saleId + ' by ' + by + ': ' + reason);
+    res.json({ ok: true, sale: stateOf(d), cancelled: d.cancelled, refunds: d.refunds });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* Payments the gateway has not confirmed yet are asked about again, on a
+   widening schedule (the gateway can lag the phone by minutes). */
+async function sweepPosPayments() {
+  try {
+    const due = await PosSale.find({ 'confirm.state': 'pending', 'confirm.tries': { $lt: 12 },
+      $or: [{ 'confirm.checkedAt': null }, { 'confirm.checkedAt': { $lt: new Date(Date.now() - 10 * 60000) } }] }).limit(50);
+    for (const d of due) await checkPayment(d);
+  } catch (e) { console.error('[POS] payment sweep: ' + e.message); }
+}
+if (process.env.NODE_ENV !== 'test') setInterval(sweepPosPayments, 10 * 60000).unref();
+router.sweepPosPayments = sweepPosPayments;
+
 module.exports = router;

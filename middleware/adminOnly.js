@@ -56,6 +56,8 @@ const ADMIN_ONLY = [
   ['GET', /^\/api\/pos\/devices\/?$/],
   ['POST', /^\/api\/pos\/devices\/[^/]+\/(status|grant)$/],
   ['POST', /^\/api\/pos\/devices\/block-others$/],
+  /* 22 Oct 2026: cancelling or refunding a POS sale (routes/pos.js). */
+  ['POST', /^\/api\/pos\/sales\/void\/?$/],
 
   /* 21 Oct 2026: the certified-agent console (routes/agents.js). Approving an
    * agent is what makes a badge say VERIFYE, so it takes the console code here

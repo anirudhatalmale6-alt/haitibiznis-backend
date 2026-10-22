@@ -474,11 +474,32 @@ router.get('/admin/pilot/list', async (req, res) => {
     const A = Object.fromEntries(agents.map((a) => [a.agentId, a]));
     const T = Object.fromEntries(trials.map((t) => [t.phoneKey, t]));
     const now = new Date();
+    /* 22 Oct 2026: LajanMaker POS sales (models/PosSale.js) per Ajan, since
+       his own pilot start. Recorded = what the phone reported and still
+       stands; confirmed = the gateway said the money arrived. */
+    const PosSale = require('../models/PosSale');
+    const POS = {};
+    for (const p of pilots) {
+      const rows = await PosSale.find({ agentId: p.agentId, soldAt: { $gte: p.startedAt } });
+      const s = { recorded: 0, recordedAmount: 0, confirmed: 0, confirmedAmount: 0, cancelled: 0, refunded: 0, refundedAmount: 0, share: 0, byService: {} };
+      for (const r of rows) {
+        if (r.state === 'cancelled') { s.cancelled++; continue; }
+        if (r.state === 'refunded') { s.refunded++; s.refundedAmount += r.refunded || 0; }
+        const net = r.net();
+        if (net <= 0) continue;
+        s.recorded++; s.recordedAmount += net; s.share += r.netShare();
+        if (r.confirm && r.confirm.state === 'confirmed') { s.confirmed++; s.confirmedAmount += net; }
+        const k = r.service || r.module || 'POS'; s.byService[k] = (s.byService[k] || 0) + 1;
+      }
+      POS[p.agentId] = s;
+    }
+    const unattributed = await PosSale.countDocuments({ agentId: '', state: { $ne: 'cancelled' } });
     res.json({
       maxDays: PILOT_MAX_DAYS,
+      posUnattributed: unattributed,
       pilots: pilots.map((p) => {
         const a = A[p.agentId];
-        return { pilot: pilotView(p, now), trial: trialView(T[p.phoneKey]),
+        return { pilot: pilotView(p, now), trial: trialView(T[p.phoneKey]), pos: POS[p.agentId],
                  agent: a ? { agentId: a.agentId, name: a.name, phone: a.phone, state: a.publicState(now),
                               referralCode: a.referralCode, sponsor: a.sponsor, city: a.city,
                               phoneChanged: phoneKey(a.phone) !== p.phoneKey } : null };
