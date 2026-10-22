@@ -182,8 +182,16 @@ router.post('/admin', async (req, res) => {
     if (b.printedId) {
       agentId = normId(b.printedId).replace(/\s+/g, '');
       if (!ID_RE.test(agentId)) return res.status(400).json({ error: 'bad_id' });
-      if (!(ymd && CertifiedAgent.certNumber(name, ymd) === agentId)) {
-        const found = CertifiedAgent.findDate(name, agentId);
+      /* 22 Oct 2026: a phone keyboard adds a space after the last word, and
+         "Alix Jacques " hashes differently from "Alix Jacques" - Jennifer was
+         told the name did not match and asked for a date. Try the name as
+         typed, trimmed, and with the stray space a badge may have been
+         PRINTED with, before giving up. */
+      const t = name.trim();
+      const forms = [...new Set([name, t, t + ' ', ' ' + t])];
+      if (!(ymd && forms.some((f) => CertifiedAgent.certNumber(f, ymd) === agentId))) {
+        let found = null;
+        for (const f of forms) { found = CertifiedAgent.findDate(f, agentId); if (found) break; }
         if (found) ymd = found;
         else if (b.force === true && ymd) idMatched = false;
         else return res.status(422).json({ error: 'no_match', agentId });
