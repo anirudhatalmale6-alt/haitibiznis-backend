@@ -131,18 +131,13 @@ async function deliverRegistration(reg) {
   /* The Classroom fields are select:false, so they have to be asked for by
      name. Only reached from here and from the resend route, both of which run
      only for a registration that is already paid. */
-  let course = null, secret = null;
+  let course = null, access = { classroom: {}, venue: null };
   try {
     course = await Course.findById(reg.course).select(Course.PUBLIC_FIELDS).lean();
-    secret = await Course.findById(reg.course)
-      .select('+classroomLink +classroomCode +accessInstructions').lean();
+    access = await paidAccess(reg.course);
   } catch (e) { /* a course we cannot read still has a reference number */ }
 
-  const result = await sendCourseAccess(reg, course, {
-    link: (secret && secret.classroomLink) || '',
-    code: (secret && secret.classroomCode) || '',
-    instructions: (secret && secret.accessInstructions) || ''
-  });
+  const result = await sendCourseAccess(reg, course, access.classroom, access.venue);
 
   const update = { $inc: { deliveryAttempts: 1 } };
   if (result.sent) {
@@ -206,6 +201,27 @@ async function reconcileReg(reg) {
   return paid || (await CourseRegistration.findById(reg._id));
 }
 
+/* ═══ WHAT A PAID STUDENT IS GIVEN ══════════════════════════════════════════
+ * One function, so the four places that reveal access (confirmation page,
+ * Kou Mwen Yo, the delivery message, a resend) cannot drift apart.
+ * ⛔ Callers run this ONLY for a registration whose status is 'completed'.
+ *   online     -> classroom { link, code, instructions }
+ *   in_person  -> classroom { instructions } + venue { address, town, dates, time }
+ * ═══════════════════════════════════════════════════════════════════════════ */
+async function paidAccess(courseId) {
+  const c = await Course.findById(courseId).select(Course.SECRET_FIELDS).lean();
+  const classroom = {
+    link: (c && c.mode !== 'in_person' && c.classroomLink) || '',
+    code: (c && c.mode !== 'in_person' && c.classroomCode) || '',
+    instructions: (c && c.accessInstructions) || ''
+  };
+  const venue = (c && c.mode === 'in_person') ? {
+    location: c.location || '', city: c.city || '',
+    startDate: c.startDate || '', endDate: c.endDate || '', sessionTime: c.sessionTime || ''
+  } : null;
+  return { classroom, venue };
+}
+
 /* What a student is told about their own registration. The Classroom details
    are attached by the ONE caller allowed to, after checking status. */
 function regPayload(reg) {
@@ -242,8 +258,10 @@ function regPayload(reg) {
 function courseFieldsFrom(body) {
   const out = {};
   const str = ['title', 'description', 'instructor', 'startDate', 'endDate',
-               'imageUrl', 'classroomLink', 'classroomCode', 'accessInstructions'];
+               'imageUrl', 'classroomLink', 'classroomCode', 'accessInstructions',
+               'sessionTime', 'city', 'location', 'program'];
   for (const k of str) if (body[k] !== undefined) out[k] = String(body[k] || '').trim();
+  if (body.mode !== undefined && ['online', 'in_person'].includes(body.mode)) out.mode = body.mode;
   if (body.price !== undefined) out.price = Math.max(0, Math.round(Number(body.price) || 0));
   if (body.maxStudents !== undefined) out.maxStudents = Math.max(0, parseInt(body.maxStudents) || 0);
   if (body.isFree !== undefined) out.isFree = !!body.isFree;
@@ -258,6 +276,28 @@ function courseFieldsFrom(body) {
     };
   }
   return out;
+}
+
+/* A course goes on sale only when a paying student would have somewhere to go.
+   Online: the Classroom link (this used to be checked only in the admin page,
+   which is not a guard). In person: a date, a time, a town and the address -
+   the four things the confirmation has to tell them. Checked on the course as
+   it WILL be after the save, not on the fields that happened to be sent. */
+function publishProblem(merged) {
+  if (merged.status !== 'published') return null;
+  if (merged.mode === 'in_person') {
+    const miss = [];
+    if (!String(merged.startDate || '').trim()) miss.push('dat');
+    if (!String(merged.sessionTime || '').trim()) miss.push('lè');
+    if (!String(merged.city || '').trim()) miss.push('vil');
+    if (!String(merged.location || '').trim()) miss.push('adrès');
+    if (miss.length) return 'Pou pibliye yon kou an pèsòn, mete: ' + miss.join(', ') + '.';
+    return null;
+  }
+  if (!String(merged.classroomLink || '').trim()) {
+    return 'Mete lyen Google Classroom la anvan ou pibliye kou a.';
+  }
+  return null;
 }
 
 /* Free and Paid are a pair, and a mismatch between them is the kind of thing
@@ -304,6 +344,8 @@ router.post('/admin', requirePin, async (req, res) => {
     const bad = priceProblem(fields, null);
     if (bad) return res.status(400).json({ error: bad });
     if (fields.isFree) fields.price = 0;
+    const notReady = publishProblem(Object.assign({ mode: 'online' }, fields));
+    if (notReady) return res.status(400).json({ error: notReady });
     const course = await Course.create(fields);
     res.json({ success: true, id: course._id });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -311,12 +353,14 @@ router.post('/admin', requirePin, async (req, res) => {
 
 router.put('/admin/:id', requirePin, async (req, res) => {
   try {
-    const existing = await Course.findById(req.params.id).select('+classroomLink +classroomCode');
+    const existing = await Course.findById(req.params.id).select(Course.SECRET_FIELDS);
     if (!existing) return res.status(404).json({ error: 'Course not found' });
     const fields = courseFieldsFrom(req.body);
     const bad = priceProblem(fields, existing);
     if (bad) return res.status(400).json({ error: bad });
     if (fields.isFree) fields.price = 0;
+    const notReady = publishProblem(Object.assign(existing.toObject(), fields));
+    if (notReady) return res.status(400).json({ error: notReady });
 
     /* 🚨 Changing the price of a course people have already paid for would
        make the reconciler compare a Stripe session against a figure that was
@@ -360,11 +404,10 @@ router.delete('/admin/:id', requirePin, async (req, res) => {
    and it is behind the console code because it is the edit form. */
 router.get('/admin/:id/classroom', requirePin, async (req, res) => {
   try {
-    const c = await Course.findById(req.params.id)
-      .select('+classroomLink +classroomCode +accessInstructions').lean();
+    const c = await Course.findById(req.params.id).select(Course.SECRET_FIELDS).lean();
     if (!c) return res.status(404).json({ error: 'Course not found' });
     res.json({ classroomLink: c.classroomLink || '', classroomCode: c.classroomCode || '',
-               accessInstructions: c.accessInstructions || '' });
+               accessInstructions: c.accessInstructions || '', location: c.location || '' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -491,7 +534,10 @@ router.post('/admin/registration/:ref/resend', requirePin, async (req, res) => {
 
 router.get('/', async (req, res) => {
   try {
-    const courses = await Course.find({ status: 'published' })
+    const q = { status: 'published' };
+    const prog = String(req.query.program || '').trim().toLowerCase();
+    if (prog) q.program = prog.slice(0, 60);
+    const courses = await Course.find(q)
       .select(Course.PUBLIC_FIELDS).sort({ startDate: 1, createdAt: -1 }).limit(100).lean();
     res.json({ count: courses.length, courses: courses.map(c =>
       Object.assign(c, { seatsLeft: seatsLeft(c) })) });
@@ -502,20 +548,24 @@ router.get('/', async (req, res) => {
 router.post('/register', async (req, res) => {
   try {
     const { courseId, studentName, phone, email, paymentMethod } = req.body;
+    /* Which advert / which Ajan code. Recorded only, nothing credited. */
+    const tag = v => String(v || '').trim().replace(/[^A-Za-z0-9_.@#-]/g, '').slice(0, 40);
+    const source = tag(req.body.source).slice(0, 60);
+    const refCode = tag(req.body.refCode);
     if (!courseId || !studentName || !phone || !email) {
       return res.status(400).json({ error: 'Non, telefòn ak imèl obligatwa.' });
     }
+    const course = await Course.findById(courseId).select(Course.PUBLIC_FIELDS);
+    if (!course) return res.status(404).json({ error: 'Kou sa a pa egziste.' });
     if (!looksLikeEmail(email)) {
       /* Said in Kreyòl and in plain terms, because this is the field people
          get wrong and the consequence - no Classroom invitation - is invisible
          to them at the moment they make the mistake. */
-      return res.status(400).json({
-        error: 'Imèl la pa bon. Nou bezwen yon adrès Gmail (egzanp: non@gmail.com) ' +
-               'paske Google Classroom travay ak kont Google.' });
+      return res.status(400).json({ error: course.mode === 'in_person'
+        ? 'Imèl la pa bon (egzanp: non@gmail.com). Se la nou voye konfimasyon ak adrès fòmasyon an.'
+        : 'Imèl la pa bon. Nou bezwen yon adrès Gmail (egzanp: non@gmail.com) ' +
+          'paske Google Classroom travay ak kont Google.' });
     }
-
-    const course = await Course.findById(courseId).select(Course.PUBLIC_FIELDS);
-    if (!course) return res.status(404).json({ error: 'Kou sa a pa egziste.' });
     if (course.status !== 'published') {
       return res.status(400).json({ error: 'Enskripsyon fèmen pou kou sa a.' });
     }
@@ -550,7 +600,7 @@ router.post('/register', async (req, res) => {
       const reg = await CourseRegistration.create({
         course: course._id, courseTitle: course.title,
         studentName: String(studentName).trim(), phone: String(phone).trim(),
-        phoneKey: key, email: String(email).trim().toLowerCase(),
+        phoneKey: key, email: String(email).trim().toLowerCase(), source, refCode,
         referenceId: ref, amount: 0, currency: course.currency || 'HTG',
         paymentMethod: 'free', status: 'pending'
       });
@@ -570,7 +620,7 @@ router.post('/register', async (req, res) => {
     const reg = await CourseRegistration.create({
       course: course._id, courseTitle: course.title,
       studentName: String(studentName).trim(), phone: String(phone).trim(),
-      phoneKey: key, email: String(email).trim().toLowerCase(),
+      phoneKey: key, email: String(email).trim().toLowerCase(), source, refCode,
       referenceId: ref, amount: total, currency: course.currency || 'HTG',
       paymentMethod: method, status: 'pending'
     });
@@ -662,13 +712,9 @@ router.get('/registration/:ref', async (req, res) => {
 
     if (reg.status === 'completed') {
       /* Loaded only now, and only because this registration is paid. */
-      const secret = await Course.findById(reg.course)
-        .select('+classroomLink +classroomCode +accessInstructions').lean();
-      out.classroom = {
-        link: (secret && secret.classroomLink) || '',
-        code: (secret && secret.classroomCode) || '',
-        instructions: (secret && secret.accessInstructions) || ''
-      };
+      const access = await paidAccess(reg.course);
+      out.classroom = access.classroom;
+      if (access.venue) out.venue = access.venue;
     }
     res.json(out);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -732,13 +778,9 @@ router.get('/my-courses', async (req, res) => {
       const course = await Course.findById(cur.course).select(Course.PUBLIC_FIELDS).lean();
       row.course = course || null;
       if (cur.status === 'completed') {
-        const secret = await Course.findById(cur.course)
-          .select('+classroomLink +classroomCode +accessInstructions').lean();
-        row.classroom = {
-          link: (secret && secret.classroomLink) || '',
-          code: (secret && secret.classroomCode) || '',
-          instructions: (secret && secret.accessInstructions) || ''
-        };
+        const access = await paidAccess(cur.course);
+        row.classroom = access.classroom;
+        if (access.venue) row.venue = access.venue;
       }
       out.push(row);
     }

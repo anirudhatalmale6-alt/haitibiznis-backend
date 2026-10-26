@@ -25,6 +25,10 @@ const registrationSchema = new mongoose.Schema({
   courseTitle: { type: String, default: '' },
 
   studentName: { type: String, required: true, trim: true, maxlength: 120 },
+  /* 26 Oct 2026: which advert (?src=) and which Ajan code (?ref=) brought the
+     student. Recorded only - nothing is paid or credited from these. */
+  source: { type: String, default: '', trim: true, maxlength: 60 },
+  refCode: { type: String, default: '', trim: true, maxlength: 40 },
   phone: { type: String, default: '' },
   /* Last eight digits - how a student finds their own courses again. */
   phoneKey: { type: String, index: true },

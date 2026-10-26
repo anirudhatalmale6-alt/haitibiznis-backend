@@ -100,7 +100,10 @@ function courseRow(c) {
     imageUrl: c.imageUrl || '',
     status: c.status,
     maxStudents: c.maxStudents || 0,
-    seatsTaken: c.seatsTaken || 0
+    seatsTaken: c.seatsTaken || 0,
+    mode: c.mode || 'online',
+    sessionTime: c.sessionTime || '',
+    city: c.city || ''
   };
 }
 
@@ -108,7 +111,7 @@ function courseRow(c) {
 async function myCourse(req, id, withClassroom) {
   if (!isId(id)) return null;
   let q = Course.findOne({ _id: id, instructorId: req.instructor._id });
-  if (withClassroom) q = q.select('+classroomLink +classroomCode +accessInstructions');
+  if (withClassroom) q = q.select('+classroomLink +classroomCode +accessInstructions +location');
   return await q;
 }
 
@@ -366,7 +369,9 @@ router.get('/courses/:id', requireInstructor, async (req, res) => {
            their OWN course. It is still select:false everywhere else. */
         classroomLink: course.classroomLink || '',
         classroomCode: course.classroomCode || '',
-        accessInstructions: course.accessInstructions || ''
+        accessInstructions: course.accessInstructions || '',
+        /* in person: they teach in that room, so they get the address too */
+        location: course.location || ''
       }),
       students,
       totals: {

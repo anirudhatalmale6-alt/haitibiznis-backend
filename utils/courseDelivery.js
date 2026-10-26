@@ -27,7 +27,33 @@ function confirmUrl(referenceId) {
    link: a WhatsApp message gets forwarded in a group without a second
    thought, and the link is the thing being sold. It carries the confirmation
    page instead, which is tied to one reference. */
-function courseMessage(reg, course) {
+/* In person: the WhatsApp text gives the date, time and TOWN, never the
+   address - same reasoning as the Classroom link above. The address is on the
+   confirmation page and in the email. */
+function venueWhen(v) {
+  if (!v) return '';
+  const d = v.startDate + (v.endDate && v.endDate !== v.startDate ? ' → ' + v.endDate : '');
+  return [d, v.sessionTime].filter(Boolean).join(' · ');
+}
+
+function courseMessage(reg, course, venue) {
+  if (venue) {
+    return [
+      '🎓 Enskripsyon ou konfime! / Votre inscription est confirmée!',
+      '',
+      reg.courseTitle || (course && course.title) || 'Fòmasyon an',
+      '🏫 Fòmasyon AN PÈSÒN',
+      '📅 ' + venueWhen(venue),
+      venue.city ? '📍 ' + venue.city : '',
+      '',
+      '🔖 ' + reg.referenceId,
+      '',
+      'Adrès egzak la ak enstriksyon yo isit la:',
+      confirmUrl(reg.referenceId),
+      '',
+      'HaitiBiznis — LajanMaker Academy'
+    ].filter(l => l !== '').join('\n');
+  }
   return [
     '🎓 Enskripsyon ou konfime! / Votre inscription est confirmée!',
     '',
@@ -47,7 +73,43 @@ function courseMessage(reg, course) {
   ].filter(l => l !== '').join('\n');
 }
 
-function courseEmail(reg, course, classroom) {
+function venueEmail(reg, course, classroom, venue) {
+  const title = reg.courseTitle || (course && course.title) || 'Fòmasyon an';
+  const cr = classroom || {};
+  let body = '<p style="margin:0 0 14px;">Bonjou ' + esc(reg.studentName || '') +
+    ',<br>Peman ou konfime epi plas ou nan fòmasyon an rezève.</p>';
+  body += row('Fòmasyon', title);
+  body += row('Kalite', 'AN PÈSÒN');
+  if (course && course.instructor) body += row('Fòmatè', course.instructor);
+  body += row('Dat', venueWhen(venue) || '—');
+  if (venue.city) body += row('Vil', venue.city);
+  body += row('Montan', Number(reg.amount) > 0
+    ? Number(reg.amount).toLocaleString('en-US') + ' ' + (reg.currency || 'HTG')
+    : 'GRATIS');
+  body += row('Referans', reg.referenceId);
+  body += '<div style="margin:18px 0 0;padding:14px;background:#FDF3D7;border:1px solid #EBD9A0;' +
+    'border-radius:10px;font-size:14px;line-height:1.65;color:#6B5208;">' +
+    '<b style="display:block;margin-bottom:6px;">KI KOTE</b>' +
+    esc(venue.location || '') + (venue.city ? '<br>' + esc(venue.city) : '') + '</div>';
+  if (cr.instructions) {
+    body += '<div style="margin:16px 0;padding:14px;background:#F0F3F7;border-radius:10px;' +
+      'font-size:14px;line-height:1.6;white-space:pre-wrap;">' + esc(cr.instructions) + '</div>';
+  }
+  return {
+    subject: '🎓 Enskripsyon konfime — ' + title,
+    html: wrapEmail({
+      heading: 'PEMAN KONFIME',
+      subheading: 'PLAS OU REZÈVE',
+      bodyHtml: body,
+      buttonText: 'WÈ ENSKRIPSYON OU',
+      buttonUrl: confirmUrl(reg.referenceId),
+      footer: 'HaitiBiznis — LajanMaker Academy<br>Ou ka jwenn fòmasyon ou yo nenpòt lè sou haitibiznis.com/kou-mwen.html'
+    })
+  };
+}
+
+function courseEmail(reg, course, classroom, venue) {
+  if (venue) return venueEmail(reg, course, classroom, venue);
   const title = reg.courseTitle || (course && course.title) || 'Kou a';
   const cr = classroom || {};
   const link = /^https?:\/\//i.test(String(cr.link || '').trim()) ? String(cr.link).trim() : '';
@@ -98,7 +160,7 @@ function courseEmail(reg, course, classroom) {
   };
 }
 
-async function sendCourseAccess(reg, course, classroom) {
+async function sendCourseAccess(reg, course, classroom, venue) {
   if (!reg) return { sent: false, reason: 'no registration' };
   return deliver(
     { phone: reg.phone, email: reg.email, name: reg.studentName },
@@ -113,9 +175,9 @@ async function sendCourseAccess(reg, course, classroom) {
           reg.referenceId
         ],
         urlSuffix: reg.referenceId,
-        text: courseMessage(reg, course)
+        text: courseMessage(reg, course, venue)
       },
-      email: courseEmail(reg, course, classroom)
+      email: courseEmail(reg, course, classroom, venue)
     }
   );
 }

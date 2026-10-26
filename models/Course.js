@@ -84,7 +84,22 @@ const courseSchema = new mongoose.Schema({
     card: { type: Boolean, default: true }
   },
 
-  status: { type: String, enum: ['draft', 'published', 'closed'], default: 'draft' }
+  status: { type: String, enum: ['draft', 'published', 'closed'], default: 'draft' },
+
+  /* ─── IN PERSON (26 Oct 2026, Jeffery: LajanMaker Academy) ──────────────────
+     'online'    taught in Google Classroom - everything above, unchanged.
+     'in_person' a class in a room: a date, a time, a town and an address.
+     The TOWN is public (it decides whether somebody can come at all). The
+     ADDRESS is what the seat buys, so it is withheld until payment exactly like
+     the Classroom link - select:false, asked for by name only after
+     status === 'completed'. */
+  mode: { type: String, enum: ['online', 'in_person'], default: 'online' },
+  sessionTime: { type: String, default: '', trim: true, maxlength: 60 },
+  city: { type: String, default: '', trim: true, maxlength: 80 },
+  location: { type: String, default: '', trim: true, maxlength: 400, select: false },
+  /* Which programme a course belongs to, e.g. 'lajanmaker-academy'. The
+     Academy landing page lists the published courses carrying its programme. */
+  program: { type: String, default: '', trim: true, lowercase: true, maxlength: 60 }
 }, { timestamps: true });
 
 /* The public list is "published courses, newest start first". */
@@ -95,6 +110,12 @@ courseSchema.index({ status: 1, startDate: -1 });
    to accidentally spread into a response. */
 courseSchema.statics.PUBLIC_FIELDS =
   'title description instructor startDate endDate imageUrl price currency ' +
-  'isFree maxStudents seatsTaken paymentMethods status createdAt';
+  'isFree maxStudents seatsTaken paymentMethods status createdAt ' +
+  'mode sessionTime city program';
+
+/* Everything a PAID student is given, in one place: every caller that is
+   allowed to reveal access details asks for exactly this. */
+courseSchema.statics.SECRET_FIELDS =
+  '+classroomLink +classroomCode +accessInstructions +location';
 
 module.exports = mongoose.model('Course', courseSchema);
