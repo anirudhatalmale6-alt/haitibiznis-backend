@@ -231,10 +231,36 @@ router.patch('/admin/:agentId', async (req, res) => {
       if (other) return res.status(409).json({ error: 'code_on_other_badge', agentId: other.agentId, name: other.name });
     }
     if (Array.isArray(b.services)) a.services = b.services.filter((s) => CertifiedAgent.SERVICES.includes(s));
+    /* 28 Oct 2026, Jennifer: "chak m mete agent yo li anrejistre dat yo
+       sètifye an ak dat pal" - every agent she enters gets the wrong
+       certification date. The date saved with a PRINTED badge is the day the
+       badge was made (the date its number was computed from), not the day of
+       the training. She can now correct it. ⛔ The printed number never
+       changes with it - it is what is on the badge. Logged old → new. */
+    const oldCert = a.certifiedAt;
+    let certChanged = false;
+    if (b.certifiedAt !== undefined && b.certifiedAt !== '' && b.certifiedAt !== null) {
+      const m = String(b.certifiedAt).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      const d = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 12)) : null;
+      if (!d || isNaN(d) || d.getUTCDate() !== +m[3]) return res.status(400).json({ error: 'bad_cert_date' });
+      if (d > new Date(Date.now() + 36 * 3600 * 1000)) return res.status(400).json({ error: 'cert_date_future' });
+      if (+m[1] < 2020) return res.status(400).json({ error: 'bad_cert_date' });
+      const before = a.certifiedAt ? a.certifiedAt.toISOString().slice(0, 10) : '';
+      if (before !== String(b.certifiedAt)) {
+        a.certifiedAt = d; certChanged = true;
+        a.history.push({ action: 'cert_date', note: before + ' → ' + b.certifiedAt });
+      }
+    }
     if (b.expiresAt !== undefined) {
       const d = b.expiresAt ? new Date(b.expiresAt) : null;
       if (d && isNaN(d)) return res.status(400).json({ error: 'bad_date' });
       a.expiresAt = d;
+    }
+    /* The validity that approval computed FROM the old date moves with it. One
+       a person typed by hand (any other day) is left exactly as they set it. */
+    if (certChanged && a.expiresAt && oldCert &&
+        a.expiresAt.toISOString().slice(0, 10) === addMonths(oldCert, VALID_MONTHS).toISOString().slice(0, 10)) {
+      a.expiresAt = addMonths(a.certifiedAt, VALID_MONTHS);
     }
     if (b.status && b.status !== a.status) {
       if (!['pending', 'active', 'suspended', 'revoked'].includes(b.status)) return res.status(400).json({ error: 'bad_status' });
