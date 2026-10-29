@@ -61,6 +61,8 @@ app.get('/api/status/share-base', (req, res) => {
 
 app.use('/api/events', eventsRouter);
 app.use('/api/ai', require('./routes/ai'));
+/* 29 Oct 2026: paid AI flyer designs for Tike Lakay events. */
+app.use('/api/flyers', require('./routes/flyers'));
 app.use('/api/payments', paymentsRouter);
 app.use('/api/rides', require('./routes/rides'));
 app.use('/api/whatsapp', require('./routes/whatsapp'));

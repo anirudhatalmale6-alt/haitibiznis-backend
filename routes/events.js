@@ -62,7 +62,7 @@ async function openEventFor(req, res, id) {
 // needs the COUNT of who is coming, never the rows. Only the organiser reads
 // those, through GET /:id/rsvps, behind their manage code.
 const PRIVATE_FIELDS = '-moncashNumber -natcashNumber -organizerEmail -doorCode -rsvps';
-const LIST_FIELDS = PRIVATE_FIELDS + ' -inviteImage';
+const LIST_FIELDS = PRIVATE_FIELDS + ' -inviteImage -sponsors';
 
 /* Anything a stranger typed that ends up inside HTML. The share page below
  * builds a page out of the event title, and anybody can create an event. */
@@ -231,6 +231,19 @@ async function shareHandler(req, res) {
     res.redirect('https://haitibiznis.com/events.html');
   }
 }
+
+/* Only the sponsors of one event. The ticket page needs the logos and nothing
+   else about the event; the full event carries the invitation picture. */
+router.get('/:id/sponsors', async (req, res) => {
+  try {
+    const event = await Event.findById(req.params.id).select('sponsors').lean();
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json({ sponsors: (event.sponsors || []).map(s => ({ name: s.name || '', logo: s.logo, link: s.link || '' })) });
+  } catch (err) {
+    res.status(400).json({ error: 'Event not found' });
+  }
+});
 
 router.get('/:id', async (req, res) => {
   try {

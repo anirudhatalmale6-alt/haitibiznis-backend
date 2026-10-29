@@ -495,7 +495,15 @@ async function handleWebhook(req, res) {
     if (!ref) return res.status(400).json({ error: 'Missing reference' });
 
     const txn = await Transaction.findOne({ referenceId: ref });
-    if (!txn) return res.status(404).json({ error: 'Transaction not found' });
+    if (!txn) {
+      /* 29 Oct 2026: AI flyer orders share the gateway and its webhook. The
+         nudge only makes the flyer code ASK the gateway, exactly like a ticket. */
+      if (/^FL-/.test(String(ref))) {
+        const fo = await require('../utils/flyerOrders').nudge(String(ref));
+        if (fo) return res.json({ received: true, paid: fo.status !== 'pending', kind: 'flyer' });
+      }
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
     if (txn.status === 'completed') return res.json({ received: true, alreadyPaid: true });
 
     /* ⛔ A card payment belongs to Stripe. SolutionIP has never seen it, so

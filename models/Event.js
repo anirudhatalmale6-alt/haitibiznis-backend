@@ -38,6 +38,30 @@ const rsvpSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 }, { _id: true });
 
+/* Sponsors of THIS event (29 Oct 2026).
+ *
+ * Jeffery: "our original plan included the option to display sponsors' logos
+ * directly on the tickets issued to attendees." It existed once, as a fixed
+ * "Sponsors Officiels" strip on the Box to Box ticket (March 2026); here it
+ * belongs to each event, set by its organiser.
+ *
+ * The logo is kept exactly as the organiser uploaded it (the page only scales
+ * it down to fit) and is drawn as an image on the ticket and the flyers - never
+ * redrawn by the AI. Capped in count and size because every logo travels with
+ * the event document. */
+const SPONSOR_LOGO = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
+const sponsorSchema = new mongoose.Schema({
+  name: { type: String, trim: true, maxlength: 60, default: '' },
+  logo: {
+    type: String, required: true,
+    validate: {
+      validator: function (v) { return typeof v === 'string' && v.length <= 200000 && SPONSOR_LOGO.test(v); },
+      message: 'Sponsor logo must be a PNG, JPEG or WebP image under 150 KB'
+    }
+  },
+  link: { type: String, trim: true, maxlength: 200, default: '' }
+}, { _id: false });
+
 const eventSchema = new mongoose.Schema({
   title: { type: String, required: true },
   type: { type: String, default: 'lòt' },
@@ -95,6 +119,11 @@ const eventSchema = new mongoose.Schema({
   views: { type: Number, default: 0 },
 
   rsvps: [rsvpSchema],
+
+  sponsors: {
+    type: [sponsorSchema], default: [],
+    validate: { validator: function (v) { return !v || v.length <= 8; }, message: 'At most 8 sponsors' }
+  },
 
   /* The code that lets the organiser manage their OWN event.
    *
