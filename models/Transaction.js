@@ -27,6 +27,12 @@ const transactionSchema = new mongoose.Schema({
   usedAt: { type: Date },
   usedBy: { type: String },
   useCount: { type: Number, default: 0 },
+  /* 29 Oct 2026: the SECRET in the QR code. Random, made the first time the
+     ticket is shown after activation (2 h before the event), never sent
+     before that and never part of any ticket read (select:false). The ticket
+     number (referenceId) is printed on the ticket in plain text, so it can no
+     longer be what lets somebody in. */
+  qrToken: { type: String, select: false, index: { unique: true, sparse: true } },
   koutyeCode: { type: String },
 
   // Whether the buyer was actually SENT their ticket, and if not, why.

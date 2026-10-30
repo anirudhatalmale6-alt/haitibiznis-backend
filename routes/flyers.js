@@ -20,7 +20,7 @@ const clientIp = require('../utils/clientIp');
 
 const SIP_URL = process.env.SOLUTIONIP_URL || 'https://plopplop.solutionip.app';
 const SIP_CLIENT = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
-const FLYER_PAGE = process.env.FLYER_PAGE_URL || 'https://haitibiznis.com/flyer-ai.html';
+const FLYER_PAGE = process.env.FLYER_PAGE_URL || (require('../utils/tlBase') + '/flyer-ai.html');
 
 /* ⛔ THE PROMOTIONAL QR IS THE PUBLIC EVENT PAGE AND NOTHING ELSE.
    An admission QR carries a ticket's secret; this one carries an event id that

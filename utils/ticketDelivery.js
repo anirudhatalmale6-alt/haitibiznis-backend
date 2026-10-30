@@ -43,7 +43,7 @@ function phoneKey(raw) {
 }
 
 function ticketUrl(referenceId) {
-  return 'https://haitibiznis.com/ticket.html?ref=' + encodeURIComponent(referenceId);
+  return require('./tlBase') + '/ticket.html?ref=' + encodeURIComponent(referenceId);
 }
 
 function ticketMessage(txn, event) {
@@ -90,7 +90,7 @@ function ticketEmail(txn, event) {
       bodyHtml: body,
       buttonText: 'LOUVRI TIKÈ A',
       buttonUrl: ticketUrl(txn.referenceId),
-      footer: 'Tikè Lakay — HaitiBiznis<br>Ou ka jwenn tikè ou nenpòt lè sou haitibiznis.com/my-tickets.html'
+      footer: 'Tikè Lakay — HaitiBiznis<br>Ou ka jwenn tikè ou nenpòt lè sou ' + require('./tlBase').replace(/^https:\/\//, '') + '/my-tickets.html'
     })
   };
 }

@@ -20,6 +20,7 @@ const SIP_CLIENT = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
    🔑 The referring agent's 3% comes OUT of this 7.5%, never on top of it; the
    split lives in myplopplop-backend/services/referral.js under 'tikelakay'. */
 const PLATFORM_FEE_PCT = 0.075;
+const TL_BASE = require('../utils/tlBase');
 
 /* ═══ NO OVERSELLING (16 Oct 2026) ═════════════════════════════════════════
    Jeffery: "Preventing Tikè Lakay from overselling tickets when multiple
@@ -360,7 +361,7 @@ router.post('/buy-ticket', async (req, res) => {
     /* The pending checkout now holds its seats - the next buyer can be checked. */
     if (release) { await release(); release = null; }
 
-    const returnUrl = `https://haitibiznis.com/ticket.html?ref=${refId}`;
+    const returnUrl = `${TL_BASE}/ticket.html?ref=${refId}`;
 
     /* ═══ CARD → STRIPE. WALLET → SOLUTIONIP. ═══════════════════════════════
        Jeffery, 4 Oct: "MonCash + NatCash = SolutionIP. Credit/Debit Cards =
@@ -379,7 +380,7 @@ router.post('/buy-ticket', async (req, res) => {
         label: `${event.title} — ${ticketName}${quantity > 1 ? ' x' + quantity : ''}`,
         reference: refId,
         successUrl: returnUrl,
-        cancelUrl: `https://haitibiznis.com/event.html?id=${eventId}`,
+        cancelUrl: `${TL_BASE}/event.html?id=${eventId}`,
         email: buyerEmail || undefined,
         metadata: { event: String(eventId), ticket: ticketName, qty: String(quantity) },
         expiresInSec: CARD_EXPIRY_SEC
@@ -532,7 +533,7 @@ async function handleWebhook(req, res) {
   }
 }
 
-const EVENT_FIELDS = 'title date startTime endTime location typeEmoji typeLabel gradient';
+const EVENT_FIELDS = 'title date startTime endTime location typeEmoji typeLabel gradient status';
 
 /* "It only asks for my phone number."
  *
@@ -684,22 +685,56 @@ const QRCode = require('qrcode');
  * screenful of computer text with no verdict in it, and the act of looking at
  * a ticket was also the act of confirming its payment. A ticket is now read at
  * a page written for the person on the door. */
-function checkUrl(referenceId) {
-  return 'https://haitibiznis.com/check.html?ref=' + encodeURIComponent(referenceId);
+/* 29 Oct 2026: the QR carries a SECRET (qrToken), not the ticket number -
+   see utils/ticketActivation.js and the Transaction model. */
+const TL_PUBLIC_BASE = TL_BASE;
+const activation = require('../utils/ticketActivation');
+/* From this date on a ticket gets in ONLY with the secret QR, never with its
+   printed number. Every Tikè Lakay event before the secret QR existed is
+   already over (last one 25 Oct 2026), so it applies to every ticket; a
+   ticket bought earlier for a later event simply shows its new QR on its own
+   page, like any other. Env-overridable only as an emergency door. */
+const QR_TOKEN_FROM = new Date(process.env.TL_QR_TOKEN_FROM || '2026-01-01T00:00:00Z');
+function checkUrl(token) {
+  return TL_PUBLIC_BASE + '/check.html?t=' + encodeURIComponent(token);
 }
 
+/* The QR, ONLY once the ticket is active. Before that the answer holds no code
+   at all - what the ticket page blurs is a decoy drawn on the phone, so there
+   is nothing behind the blur to recover. */
 router.get('/ticket/:referenceId/qr', async (req, res) => {
   try {
-    const txn = await Transaction.findOne({ referenceId: req.params.referenceId });
+    let txn = await Transaction.findOne({ referenceId: req.params.referenceId });
     if (!txn) return res.status(404).json({ error: 'Ticket not found' });
-    const current = await reconcile(txn);
-    const qrDataUrl = await QRCode.toDataURL(checkUrl(txn.referenceId),
+    txn = (await reconcile(txn)) || txn;
+    const event = await Event.findById(txn.event).select(EVENT_FIELDS).lean();
+    const at = activation.activationAt(event);
+    const base = { referenceId: txn.referenceId, status: txn.status, activatesAt: at, serverNow: new Date() };
+    if (txn.status !== 'completed') return res.json(Object.assign(base, { active: false, qr: null }));
+    if (event && event.status === 'cancelled') return res.json(Object.assign(base, { active: false, qr: null, cancelled: true }));
+    if (!activation.isActive(event)) return res.json(Object.assign(base, { active: false, qr: null }));
+    // made once: whoever writes it first wins, everyone else reads the same one
+    await Transaction.updateOne({ _id: txn._id, qrToken: { $exists: false } },
+      { $set: { qrToken: require('crypto').randomBytes(16).toString('hex') } });
+    const withTok = await Transaction.findById(txn._id).select('+qrToken');
+    const qrDataUrl = await QRCode.toDataURL(checkUrl(withTok.qrToken),
       { width: 300, margin: 2, color: { dark: '#0A0E1A', light: '#FFFFFF' } });
-    res.json({ qr: qrDataUrl, referenceId: txn.referenceId, status: (current || txn).status });
+    res.json(Object.assign(base, { active: true, qr: qrDataUrl }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+/* The verdict the door sees, one of four (his words): VALID, ALREADY USED,
+   NOT YET ACTIVE, INVALID. `reason` says why for the last two. */
+function verdict(txn, event, now) {
+  if (!txn) return { state: 'invalid', reason: 'not_found' };
+  if (txn.status !== 'completed') return { state: 'invalid', reason: txn.status || 'not_paid' };
+  if (event && event.status === 'cancelled') return { state: 'invalid', reason: 'event_cancelled' };
+  if (!activation.isActive(event, now)) return { state: 'not_active', reason: 'not_active', activatesAt: activation.activationAt(event) };
+  if (txn.usedAt) return { state: 'used', reason: 'used' };
+  return { state: 'valid', reason: 'ok' };
+}
 
 function checkPayload(txn, event) {
   return {
@@ -725,10 +760,15 @@ function checkPayload(txn, event) {
 router.get('/check/:referenceId', async (req, res) => {
   try {
     let txn = await Transaction.findOne({ referenceId: req.params.referenceId });
-    if (!txn) return res.status(404).json({ valid: false, reason: 'not_found' });
+    if (!txn) return res.status(404).json({ valid: false, reason: 'not_found', state: 'invalid' });
     txn = (await reconcile(txn)) || txn;
     const event = await Event.findById(txn.event).select(EVENT_FIELDS).lean();
-    res.json(checkPayload(txn, event));
+    /* The ticket NUMBER is printed in plain text, so for a ticket bought since
+       the secret QR existed it proves nothing: only the QR's secret does. */
+    if (txn.createdAt >= QR_TOKEN_FROM) {
+      return res.json(Object.assign(checkPayload(txn, event), { valid: false, state: 'invalid', reason: 'need_qr' }));
+    }
+    res.json(Object.assign(checkPayload(txn, event), verdict(txn, event)));
   } catch (err) {
     res.status(500).json({ valid: false, reason: 'error', error: err.message });
   }
@@ -808,7 +848,12 @@ router.post('/check/:referenceId/use', async (req, res) => {
       endTime: event.endTime, location: event.location, typeEmoji: event.typeEmoji,
       typeLabel: event.typeLabel, gradient: event.gradient
     } : null;
-    if (txn.status !== 'completed') return res.json(checkPayload(txn, eventOut));
+    if (txn.status !== 'completed') return res.json(Object.assign(checkPayload(txn, eventOut), verdict(txn, event)));
+    if (txn.createdAt >= QR_TOKEN_FROM) {
+      return res.json(Object.assign(checkPayload(txn, eventOut), { valid: false, state: 'invalid', reason: 'need_qr' }));
+    }
+    const v0 = verdict(txn, event);
+    if (v0.state === 'invalid' || v0.state === 'not_active') return res.json(Object.assign(checkPayload(txn, eventOut), v0, { valid: false }));
 
     // Shown on the ticket card at the gate, so it is a word he can read, not
     // the internal name of the credential that was used.
@@ -823,7 +868,7 @@ router.post('/check/:referenceId/use', async (req, res) => {
       { new: true }
     );
     if (claimed) {
-      return res.json(Object.assign(checkPayload(claimed, eventOut), { firstUse: true, secondsAgo: 0 }));
+      return res.json(Object.assign(checkPayload(claimed, eventOut), { firstUse: true, secondsAgo: 0, state: 'valid' }));
     }
 
     // Already used. Count the attempt, and say how long ago and by whom, because
@@ -834,9 +879,61 @@ router.post('/check/:referenceId/use', async (req, res) => {
     );
     const cur = again || txn;
     const secondsAgo = cur.usedAt ? Math.max(0, Math.round((Date.now() - new Date(cur.usedAt).getTime()) / 1000)) : null;
-    res.json(Object.assign(checkPayload(cur, eventOut), { firstUse: false, secondsAgo }));
+    res.json(Object.assign(checkPayload(cur, eventOut), { firstUse: false, secondsAgo, state: 'used' }));
   } catch (err) {
     res.status(500).json({ valid: false, reason: 'error', error: err.message });
+  }
+});
+
+/* ═══ THE SECRET QR (29 Oct 2026) ═════════════════════════════════════════
+   GET  /api/payments/qr/:token        what the door sees, read only
+   POST /api/payments/qr/:token/use    admit (door code or console code)
+   Both refuse before activation, whatever the token. A token is 32 random
+   hex characters: it cannot be guessed, and an unknown one is INVALID. */
+async function byToken(token) {
+  if (!/^[a-f0-9]{32}$/.test(String(token || ''))) return null;
+  return Transaction.findOne({ qrToken: token });
+}
+function eventOutOf(event) {
+  return event ? { title: event.title, date: event.date, startTime: event.startTime, endTime: event.endTime,
+    location: event.location, typeEmoji: event.typeEmoji, typeLabel: event.typeLabel, gradient: event.gradient } : null;
+}
+router.get('/qr/:token', async (req, res) => {
+  try {
+    let txn = await byToken(req.params.token);
+    if (!txn) return res.status(404).json({ valid: false, state: 'invalid', reason: 'not_found' });
+    txn = (await reconcile(txn)) || txn;
+    const event = await Event.findById(txn.event).select(EVENT_FIELDS).lean();
+    const v = verdict(txn, event);
+    res.json(Object.assign(checkPayload(txn, eventOutOf(event)), v, { valid: v.state === 'valid' }));
+  } catch (err) {
+    res.status(500).json({ valid: false, state: 'invalid', reason: 'error', error: err.message });
+  }
+});
+router.post('/qr/:token/use', async (req, res) => {
+  try {
+    let txn = await byToken(req.params.token);
+    if (!txn) return res.status(404).json({ valid: false, state: 'invalid', reason: 'not_found' });
+    const event = await Event.findById(txn.event).select(EVENT_FIELDS + ' doorCode');
+    const who = await doorAuth(req, event);
+    if (!who) return res.status(403).json({ valid: false, reason: 'bad_code' });
+    txn = (await reconcile(txn)) || txn;
+    const eventOut = eventOutOf(event);
+    const v = verdict(txn, event);
+    if (v.state === 'invalid' || v.state === 'not_active') return res.json(Object.assign(checkPayload(txn, eventOut), v, { valid: false }));
+    const label = String((req.body && req.body.door) || '').slice(0, 40) || (who === 'console' ? 'Konsòl' : 'Pòt');
+    // Whoever wins this update is the entry: two phones, same second, one VALID.
+    const claimed = await Transaction.findOneAndUpdate(
+      { _id: txn._id, status: 'completed', usedAt: null },
+      { $set: { usedAt: new Date(), usedBy: label }, $inc: { useCount: 1 } },
+      { new: true });
+    if (claimed) return res.json(Object.assign(checkPayload(claimed, eventOut), { firstUse: true, secondsAgo: 0, state: 'valid', reason: 'ok' }));
+    const again = await Transaction.findOneAndUpdate({ _id: txn._id }, { $inc: { useCount: 1 } }, { new: true });
+    const cur = again || txn;
+    const secondsAgo = cur.usedAt ? Math.max(0, Math.round((Date.now() - new Date(cur.usedAt).getTime()) / 1000)) : null;
+    res.json(Object.assign(checkPayload(cur, eventOut), { firstUse: false, secondsAgo, state: 'used', reason: 'used', valid: false }));
+  } catch (err) {
+    res.status(500).json({ valid: false, state: 'invalid', reason: 'error', error: err.message });
   }
 });
 

@@ -61,6 +61,7 @@ async function openEventFor(req, res, id) {
 // answering an invitation and not publishing a directory. The public event page
 // needs the COUNT of who is coming, never the rows. Only the organiser reads
 // those, through GET /:id/rsvps, behind their manage code.
+const TL_BASE = require('../utils/tlBase');
 const PRIVATE_FIELDS = '-moncashNumber -natcashNumber -organizerEmail -doorCode -rsvps';
 const LIST_FIELDS = PRIVATE_FIELDS + ' -inviteImage -sponsors';
 
@@ -184,7 +185,7 @@ async function shareHandler(req, res) {
     òganize l la retire l.</p>
  <p style="margin-top:8px">Cet événement n'est plus disponible. Le lien correspond à un
     événement supprimé ou terminé.</p>
- <a class="btn" href="https://haitibiznis.com/events.html">Wè lòt evènman yo / Voir les autres événements</a>
+ <a class="btn" href="${TL_BASE}/">Wè lòt evènman yo / Voir les autres événements</a>
  <a class="btn ghost" href="https://wa.me/50946859702">Kontakte nou / Nous contacter</a>
  <small>Tikè Lakay &middot; HaitiBiznis</small>
 </div></body></html>`);
@@ -199,7 +200,7 @@ async function shareHandler(req, res) {
     const when = date + (time ? ` · ${time}` : '');
     const desc = `${when}${loc ? ' | ' + loc : ''}${event.description ? ' — ' + event.description.substring(0, 120) : ''}`;
     const emoji = event.typeEmoji || '🎪';
-    const pageUrl = `https://haitibiznis.com/event.html?id=${event._id}`;
+    const pageUrl = `${TL_BASE}/event.html?id=${event._id}`;
 
     /* Everything below is written by whoever created the event, and creating
      * an event needs no account. Only the double quote used to be escaped,
@@ -228,7 +229,7 @@ async function shareHandler(req, res) {
 <title>${t} — Tikè Lakay</title>
 </head><body><p>Redirection...</p><script>window.location.href=${JSON.stringify(pageUrl)};</script></body></html>`);
   } catch (err) {
-    res.redirect('https://haitibiznis.com/events.html');
+    res.redirect(TL_BASE + '/');
   }
 }
 
