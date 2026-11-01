@@ -767,7 +767,7 @@ router.post('/admin/drivers/:id/:act', async (req, res) => {
     if (!a || a.publicState() !== 'active' || !a.referralCode) return res.status(400).json({ error: 'badge_not_active' });
     code = a.referralCode;
   }
-  const r = await msw('POST', '/internal/console/' + req.params.id + '/' + act, { by: b.by, reason: b.reason, code });
+  const r = await msw('POST', '/internal/console/' + req.params.id + '/' + act, { by: b.by, reason: b.reason, code, service: b.service });
   res.status(r.status).json(r.data);
 });
 
