@@ -162,6 +162,31 @@ router.get('/driver-link', async (req, res) => {
   }
 });
 
+/* PUBLIC: the Ajan's own driver count (1 Nov 2026) - what his LajanMaker app
+   shows next to the drivers he registered: how many reached MsouWout under his
+   code, how many Jennifer VERIFIED, and the 1 000 HTG per 5 verified rule
+   (tracking only - nothing here pays anybody). Counts only, no driver names:
+   a phone number is not a login. */
+router.get('/my-driver-stats', async (req, res) => {
+  try {
+    if (tooMany(req, 60, 10 * 60 * 1000)) return res.status(429).json({ error: 'too_many' });
+    const k = last8(req.query.phone);
+    if (!k) return res.status(400).json({ error: 'phone_required' });
+    const list = await CertifiedAgent.find({ status: 'active', referralCode: { $ne: '' } });
+    const a = list.find((x) => last8(x.phone) === k && x.publicState() === 'active');
+    if (!a) return res.status(404).json({ found: false });
+    const r = await msw('GET', '/internal/console-stats/agents');
+    if (r.status !== 200) return res.status(503).json({ error: 'link_unavailable' });
+    const code = String(a.referralCode).toUpperCase();
+    const row = (r.data.agents || []).find((x) => String(x.code).toUpperCase() === code) || { registered: 0, verified: 0 };
+    res.set('Cache-Control', 'no-store');
+    res.json({ found: true, code: a.referralCode, registered: row.registered, verified: row.verified,
+               bonusHtg: Math.floor(row.verified / 5) * 1000, toNext: 5 - (row.verified % 5) });
+  } catch (e) {
+    res.status(500).json({ error: 'server' });
+  }
+});
+
 router.use('/admin', requirePin);
 
 function adminView(a) {
