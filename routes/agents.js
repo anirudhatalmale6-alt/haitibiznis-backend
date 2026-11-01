@@ -138,6 +138,30 @@ router.post('/register', async (req, res) => {
 /* ─── CONSOLE ──────────────────────────────────────────────────────────── */
 /* ⛔ Also in middleware/adminOnly.js: a guard inside the thing it guards is not
    the only guard. */
+/* ─── PUBLIC: an Ajan's personal driver link (1 Nov 2026) ──────────────────
+   Jeffery: "make sure the Ajan code is captured reliably". The LajanMaker app
+   knows its Ajan by the phone number on his badge; this turns that number into
+   his personal MsouWout driver link, so a driver he signs up is credited to him
+   with nothing to type. Only an ACTIVE badge with a referral code answers, and
+   only with what the public badge page already shows for an active Ajan. */
+function last8(p) { const d = String(p || '').replace(/\D/g, ''); return d.length >= 8 ? d.slice(-8) : ''; }
+const DRIVER_FORM = 'https://msouwout.com/driver-register.html';
+router.get('/driver-link', async (req, res) => {
+  try {
+    if (tooMany(req, 30, 10 * 60 * 1000)) return res.status(429).json({ error: 'too_many' });
+    const k = last8(req.query.phone);
+    if (!k) return res.status(400).json({ error: 'phone_required' });
+    const list = await CertifiedAgent.find({ status: 'active', referralCode: { $ne: '' } });
+    const a = list.find((x) => last8(x.phone) === k && x.publicState() === 'active');
+    if (!a) return res.status(404).json({ found: false });
+    res.set('Cache-Control', 'no-store');
+    res.json({ found: true, name: a.name, agentId: a.agentId, code: a.referralCode,
+               link: DRIVER_FORM + '?agent=' + encodeURIComponent(a.referralCode) });
+  } catch (e) {
+    res.status(500).json({ error: 'server' });
+  }
+});
+
 router.use('/admin', requirePin);
 
 function adminView(a) {
@@ -648,6 +672,78 @@ router.post('/admin/pilot/:agentId/cancel', async (req, res) => {
     await PosTrial.updateOne({ phoneKey: p.phoneKey }, { $set: { trialEndsAt: now } });
     res.json({ pilot: pilotView(p, now), trial: trialView(await PosTrial.findOne({ phoneKey: p.phoneKey }).lean()) });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ═══ MSOUWOUT DRIVERS, FROM THIS CONSOLE (1 Nov 2026) ═════════════════════
+   Jennifer checks the drivers' documents but could not approve them: MsouWout
+   approval needed Jeffery's own login + the code on his phone. These pass her
+   decision to MsouWout server to server (shared INTERNAL_SERVICE_KEY, never a
+   browser), behind the same console code as the rest of this page, and always
+   with the name of the person deciding. */
+const MSW_API = process.env.MSOUWOUT_API_URL || 'https://msouwout-backend.onrender.com';
+async function msw(method, path, body) {
+  const key = process.env.INTERNAL_SERVICE_KEY;
+  if (!key) return { status: 503, data: { error: 'link_unavailable' } };
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 60000);
+  try {
+    const o = { method, headers: { 'x-internal-key': key }, signal: ctl.signal };
+    if (body !== undefined) { o.headers['Content-Type'] = 'application/json'; o.body = JSON.stringify(body); }
+    const r = await fetch(MSW_API + '/api/drivers' + path, o);
+    const data = await r.json().catch(() => ({}));
+    if (r.status === 401 || r.status === 503) return { status: 503, data: { error: 'link_unavailable' } };
+    return { status: r.status, data };
+  } catch (e) {
+    return { status: 503, data: { error: 'link_unavailable' } };
+  } finally {
+    clearTimeout(t);
+  }
+}
+const UUID_RE = /^[0-9a-f-]{36}$/i;
+router.get('/admin/drivers', async (req, res) => {
+  const st = ['pending', 'approved', 'rejected', 'suspended', 'all'].includes(req.query.status) ? req.query.status : 'pending';
+  const r = await msw('GET', '/internal/console/list?status=' + st);
+  if (r.status === 200) {
+    /* the recruiting Ajan by name, from this registry */
+    const codes = [...new Set((r.data.drivers || []).map((d) => d.referral_code).filter(Boolean))];
+    const agents = codes.length ? await CertifiedAgent.find({ referralCode: { $in: codes } }).select('name agentId referralCode') : [];
+    const byCode = {}; agents.forEach((a) => { byCode[String(a.referralCode).toUpperCase()] = { name: a.name, agentId: a.agentId }; });
+    (r.data.drivers || []).forEach((d) => { d.ajan = d.referral_attached ? (byCode[String(d.referral_code).toUpperCase()] || null) : null; });
+  }
+  res.status(r.status).json(r.data);
+});
+router.get('/admin/drivers/stats', async (req, res) => {
+  const r = await msw('GET', '/internal/console-stats/agents');
+  if (r.status !== 200) return res.status(r.status).json(r.data);
+  const agents = await CertifiedAgent.find({ referralCode: { $ne: '' } }).select('name agentId referralCode status');
+  const byCode = {}; agents.forEach((a) => { byCode[String(a.referralCode).toUpperCase()] = a; });
+  const rows = (r.data.agents || []).map((x) => {
+    const a = byCode[String(x.code).toUpperCase()];
+    /* Jeffery's rule, shown for tracking only: 1 000 HTG for every 5 VERIFIED
+       drivers. Nothing here pays anybody. */
+    return { code: x.code, name: a ? a.name : '', agentId: a ? a.agentId : '', registered: x.registered, verified: x.verified,
+             bonusHtg: Math.floor(x.verified / 5) * 1000, toNext: 5 - (x.verified % 5) };
+  });
+  res.json({ agents: rows, uncredited: r.data.uncredited || 0 });
+});
+router.get('/admin/drivers/:id', async (req, res) => {
+  if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'not_found' });
+  const r = await msw('GET', '/internal/console/' + req.params.id);
+  res.status(r.status).json(r.data);
+});
+router.post('/admin/drivers/:id/:act', async (req, res) => {
+  const act = req.params.act;
+  if (!UUID_RE.test(req.params.id) || !['approve', 'reject', 'agent'].includes(act)) return res.status(404).json({ error: 'not_found' });
+  const b = req.body || {};
+  let code = String(b.code || '').trim();
+  /* An Ajan can be named by his badge number: it becomes his referral code. */
+  if (act === 'agent' && /^LMA-?\d{4}/i.test(code)) {
+    const a = await CertifiedAgent.findOne({ agentId: normId(code) });
+    if (!a || a.publicState() !== 'active' || !a.referralCode) return res.status(400).json({ error: 'badge_not_active' });
+    code = a.referralCode;
+  }
+  const r = await msw('POST', '/internal/console/' + req.params.id + '/' + act, { by: b.by, reason: b.reason, code });
+  res.status(r.status).json(r.data);
 });
 
 module.exports = router;
