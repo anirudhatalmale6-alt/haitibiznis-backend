@@ -175,13 +175,22 @@ router.get('/my-driver-stats', async (req, res) => {
     const list = await CertifiedAgent.find({ status: 'active', referralCode: { $ne: '' } });
     const a = list.find((x) => last8(x.phone) === k && x.publicState() === 'active');
     if (!a) return res.status(404).json({ found: false });
-    const r = await msw('GET', '/internal/console-stats/agents');
+    /* 1 Nov 2026 (evening), Jeffery: "Nirdjy and Lousenia! They can't find the
+       drivers they sign up!" - drivers who came through the Ajan's QR / the
+       MsouWout form were counted but never LISTED in the app. The Ajan now sees
+       each of them: first name + initial, status, date, photos complete or not.
+       No phone, no full name, no document - a phone number is not a login. */
+    const r = await msw('GET', '/internal/console/list?status=all');
     if (r.status !== 200) return res.status(503).json({ error: 'link_unavailable' });
     const code = String(a.referralCode).toUpperCase();
-    const row = (r.data.agents || []).find((x) => String(x.code).toUpperCase() === code) || { registered: 0, verified: 0 };
+    const mine = (r.data.drivers || []).filter((d) => d.referral_attached && String(d.referral_code || '').toUpperCase() === code);
+    const short = (n) => { const w = String(n || '').trim().split(/\s+/).filter(Boolean); return w.length ? w[0] + (w.length > 1 ? ' ' + w[w.length - 1][0].toUpperCase() + '.' : '') : '—'; };
+    const verified = mine.filter((d) => d.status === 'approved').length;
     res.set('Cache-Control', 'no-store');
-    res.json({ found: true, code: a.referralCode, registered: row.registered, verified: row.verified,
-               bonusHtg: Math.floor(row.verified / 5) * 1000, toNext: 5 - (row.verified % 5) });
+    res.json({ found: true, code: a.referralCode, registered: mine.length, verified,
+               bonusHtg: Math.floor(verified / 5) * 1000, toNext: 5 - (verified % 5),
+               drivers: mine.slice(0, 100).map((d) => ({ name: short(d.full_name), status: d.status, service: d.preferred_service || 'both',
+                 at: d.created_at, photos: d.doc_count, reason: d.status === 'rejected' ? (d.rejection_reason || '') : '' })) });
   } catch (e) {
     res.status(500).json({ error: 'server' });
   }
