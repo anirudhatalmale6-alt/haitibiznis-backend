@@ -190,7 +190,10 @@ router.get('/my-driver-stats', async (req, res) => {
     res.json({ found: true, code: a.referralCode, registered: mine.length, verified,
                bonusHtg: Math.floor(verified / 5) * 1000, toNext: 5 - (verified % 5),
                drivers: mine.slice(0, 100).map((d) => ({ name: short(d.full_name), status: d.status, service: d.preferred_service || 'both',
-                 at: d.created_at, photos: d.doc_count, reason: d.status === 'rejected' ? (d.rejection_reason || '') : '', fix: d.fix_docs || [] })) });
+                 at: d.created_at, photos: d.doc_count, reason: d.status === 'rejected' ? (d.rejection_reason || '') : '', fix: d.fix_docs || [],
+                 /* 1 Nov 2026, Jeffery: "when a doc is missing or not updated or expired it should show it to them" */
+                 missing: ['selfie', 'id', 'license', 'oavct', 'vehicle'].filter((t) => !(d.doc_types || []).includes(t)),
+                 oavct: !d.oavct_expiry ? 'missing' : (new Date(d.oavct_expiry).toISOString().slice(0, 10) < new Date().toISOString().slice(0, 10) ? 'expired' : 'ok') })) });
   } catch (e) {
     res.status(500).json({ error: 'server' });
   }
