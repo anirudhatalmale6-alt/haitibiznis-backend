@@ -190,7 +190,7 @@ router.get('/my-driver-stats', async (req, res) => {
     res.json({ found: true, code: a.referralCode, registered: mine.length, verified,
                bonusHtg: Math.floor(verified / 5) * 1000, toNext: 5 - (verified % 5),
                drivers: mine.slice(0, 100).map((d) => ({ name: short(d.full_name), status: d.status, service: d.preferred_service || 'both',
-                 at: d.created_at, photos: d.doc_count, reason: d.status === 'rejected' ? (d.rejection_reason || '') : '' })) });
+                 at: d.created_at, photos: d.doc_count, reason: d.status === 'rejected' ? (d.rejection_reason || '') : '', fix: d.fix_docs || [] })) });
   } catch (e) {
     res.status(500).json({ error: 'server' });
   }
@@ -767,7 +767,7 @@ router.get('/admin/drivers/:id', async (req, res) => {
 });
 router.post('/admin/drivers/:id/:act', async (req, res) => {
   const act = req.params.act;
-  if (!UUID_RE.test(req.params.id) || !['approve', 'reject', 'agent'].includes(act)) return res.status(404).json({ error: 'not_found' });
+  if (!UUID_RE.test(req.params.id) || !['approve', 'reject', 'agent', 'fix', 'oavct', 'document'].includes(act)) return res.status(404).json({ error: 'not_found' });
   const b = req.body || {};
   let code = String(b.code || '').trim();
   /* An Ajan can be named by his badge number: it becomes his referral code. */
@@ -776,7 +776,8 @@ router.post('/admin/drivers/:id/:act', async (req, res) => {
     if (!a || a.publicState() !== 'active' || !a.referralCode) return res.status(400).json({ error: 'badge_not_active' });
     code = a.referralCode;
   }
-  const r = await msw('POST', '/internal/console/' + req.params.id + '/' + act, { by: b.by, reason: b.reason, code, service: b.service });
+  const r = await msw('POST', '/internal/console/' + req.params.id + '/' + act, { by: b.by, reason: b.reason, code, service: b.service,
+    docs: b.docs, note: b.note, expiry: b.expiry, doc_type: b.doc_type, image_data: b.image_data });
   res.status(r.status).json(r.data);
 });
 
