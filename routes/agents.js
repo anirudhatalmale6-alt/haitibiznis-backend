@@ -682,17 +682,22 @@ async function setTrialEndNoShorten(key, phone, name, agentId, endsAt, now) {
 let sweeping = false;
 async function pilotSweep() {
   if (sweeping) return null; sweeping = true;
-  const out = { created: 0, moved: 0, skipped: [] };
+  const out = { active: 0, had: 0, created: 0, moved: 0, skipped: [] };
   try {
     const list = await CertifiedAgent.find({ status: 'active' });
+    out.active = list.length;
     for (const a of list) {
       try {
         const r = await ensureAutoPilot(a, 'auto-sweep');
-        if (r.created) out.created++; else if (r.moved) out.moved++;
+        if (r.created) out.created++; else if (r.moved) out.moved++; else if (r.kept) out.had++;
         else if (r.skipped && r.skipped !== 'not_active') out.skipped.push(a.agentId + ':' + r.skipped);
       } catch (e) { out.skipped.push(a.agentId + ':error'); }
     }
-    if (out.created || out.moved || out.skipped.length) console.log('[PILOT] auto sweep', JSON.stringify(out));
+    /* counts only (plus badge numbers of the ones skipped) - always once at boot, then only when something happens */
+    if (!pilotSweep.logged || out.created || out.moved || out.skipped.length) {
+      pilotSweep.logged = true;
+      console.log('[PILOT] auto sweep active=' + out.active + ' had=' + out.had + ' created=' + out.created + ' moved=' + out.moved + ' skipped=' + JSON.stringify(out.skipped));
+    }
     return out;
   } finally { sweeping = false; }
 }
