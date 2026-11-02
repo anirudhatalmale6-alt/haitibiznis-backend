@@ -737,6 +737,32 @@ async function msw(method, path, body) {
   }
 }
 const UUID_RE = /^[0-9a-f-]{36}$/i;
+/* Jeffery's text, 2 Nov 2026. ⛔ It must never tell a driver he can take rides now. */
+function driverWelcomeText(fullName) {
+  const first = String(fullName || '').trim().split(/\s+/)[0] || '';
+  return '🎉 FELISITASYON! BYENVINI NAN MSOUWOUT!\n\n'
+    + 'Bonjou' + (first ? ' ' + first : '') + '! Nou kontan fè w konnen enskripsyon w kòm chofè MsouWout apwouve. ✅\n\n'
+    + '📲 Telechaje aplikasyon MsouWout la, antre nimewo telefòn ou epi kreye PIN 4 chif ou.\n\n'
+    + '🎓 MSOUWOUT AP ÒGANIZE YON FÒMASYON GRATIS POU OU!\n\n'
+    + 'Nou pral montre w kijan pou itilize aplikasyon MsouWout ak MyPlopPlop yo pi byen, kijan pou resevwa ak jere kous ak livrezon, epi kijan pou travay an sekirite ak pwofesyonalis.\n\n'
+    + '📅 N ap kontakte w pou ba w dat, lè ak kote fòmasyon an ap fèt.\n\n'
+    + '🚀 Gwo lansman an ap vini byento!\n\n'
+    + 'MsouWout — Chofè Verifye. Kous An Sekirite.';
+}
+async function sendDriverWelcome(driver, by) {
+  const wa = require('../utils/whatsappSend');
+  let out = { sent: false, reason: 'WhatsApp credentials not configured' };
+  if (wa.configured()) {
+    try {
+      out = await wa.sendWhatsApp(driver.phone, { template: process.env.WHATSAPP_TEMPLATE_DRIVER_WELCOME || '', lang: process.env.WHATSAPP_TEMPLATE_LANG || 'fr',
+        bodyParams: [String(driver.full_name || '').trim().split(/\s+/)[0] || 'chofè'], text: driverWelcomeText(driver.full_name) });
+    } catch (e) { out = { sent: false, reason: e.message }; }
+  }
+  const status = out.sent ? 'sent' : 'manual_needed';
+  await msw('POST', '/internal/console/' + driver.id + '/welcome', { by: by || 'system', status, channel: out.sent ? 'whatsapp_auto' : 'none',
+    note: out.sent ? '' : String(out.reason || '').slice(0, 200) });
+  return { status, channel: out.sent ? 'whatsapp_auto' : 'none', reason: out.sent ? '' : out.reason, text: driverWelcomeText(driver.full_name) };
+}
 router.get('/admin/drivers', async (req, res) => {
   const st = ['pending', 'approved', 'rejected', 'suspended', 'all'].includes(req.query.status) ? req.query.status : 'pending';
   const r = await msw('GET', '/internal/console/list?status=' + st);
@@ -770,7 +796,7 @@ router.get('/admin/drivers/:id', async (req, res) => {
 });
 router.post('/admin/drivers/:id/:act', async (req, res) => {
   const act = req.params.act;
-  if (!UUID_RE.test(req.params.id) || !['approve', 'reject', 'agent', 'fix', 'oavct', 'document'].includes(act)) return res.status(404).json({ error: 'not_found' });
+  if (!UUID_RE.test(req.params.id) || !['approve', 'reject', 'agent', 'fix', 'oavct', 'document', 'welcome'].includes(act)) return res.status(404).json({ error: 'not_found' });
   const b = req.body || {};
   let code = String(b.code || '').trim();
   /* An Ajan can be named by his badge number: it becomes his referral code. */
@@ -779,8 +805,20 @@ router.post('/admin/drivers/:id/:act', async (req, res) => {
     if (!a || a.publicState() !== 'active' || !a.referralCode) return res.status(400).json({ error: 'badge_not_active' });
     code = a.referralCode;
   }
+  /* Jennifer sent the welcome herself from the WhatsApp button: record it (once) */
+  if (act === 'welcome') {
+    const w = await msw('POST', '/internal/console/' + req.params.id + '/welcome', { by: b.by, status: 'sent', channel: 'whatsapp_manual' });
+    return res.status(w.status).json(w.data);
+  }
   const r = await msw('POST', '/internal/console/' + req.params.id + '/' + act, { by: b.by, reason: b.reason, code, service: b.service,
     docs: b.docs, note: b.note, expiry: b.expiry, doc_type: b.doc_type, image_data: b.image_data });
+  /* 2 Nov 2026, Jeffery: after Jennifer's approval is saved, the welcome goes out by
+     itself - ONCE, only on a NEW approval (not a change of services). WhatsApp is
+     the only channel there is; until the Business number is connected the result
+     is "to send by hand" and her console shows the ready-written button. */
+  if (act === 'approve' && r.status === 200 && r.data && r.data.was !== 'approved' && r.data.driver && !r.data.driver.welcome_status) {
+    r.data.welcome = await sendDriverWelcome(r.data.driver, b.by);
+  }
   res.status(r.status).json(r.data);
 });
 
