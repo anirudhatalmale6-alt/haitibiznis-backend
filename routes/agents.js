@@ -221,7 +221,10 @@ router.get('/admin/list', async (req, res) => {
     }
     const list = await CertifiedAgent.find(q).sort({ status: 1, updatedAt: -1 }).limit(500);
     const counts = await CertifiedAgent.aggregate([{ $group: { _id: '$status', n: { $sum: 1 } } }]);
-    res.json({ agents: list.map(adminView), counts: Object.fromEntries(counts.map((c) => [c._id, c.n])),
+    /* activation date, end date and days left of each Ajan's pilot - the same figures his app shows */
+    const P = {}; (await AjanPilot.find({ agentId: { $in: list.map((a) => a.agentId) } })).forEach((p) => { P[p.agentId] = p; });
+    const now = new Date();
+    res.json({ agents: list.map((a) => Object.assign(adminView(a), { pilot: pilotView(P[a.agentId], now) })), counts: Object.fromEntries(counts.map((c) => [c._id, c.n])),
                services: CertifiedAgent.SERVICES });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -336,7 +339,11 @@ router.patch('/admin/:agentId', async (req, res) => {
     }
     if (a.history.length > 50) a.history = a.history.slice(-50);
     await a.save();
-    res.json({ agent: adminView(a) });
+    /* approved (or phone corrected) = the 30-day pilot, by itself */
+    let pilot = null;
+    try { await ensureAutoPilot(a, String(b.by || 'console').slice(0, 40)); pilot = await AjanPilot.findOne({ agentId: a.agentId }); }
+    catch (e) { console.warn('[PILOT] auto on save failed for ' + a.agentId + ': ' + e.message); }
+    res.json({ agent: Object.assign(adminView(a), { pilot: pilotView(pilot) }) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -610,6 +617,93 @@ async function setTrialEnd(key, phone, name, agentId, endsAt, now) {
   }
 }
 
+/* ═══ THE PILOT STARTS BY ITSELF WHEN THE BADGE IS APPROVED (2 Nov 2026) ═══
+   Jeffery: "YES, APPROVED. The 30-day free pilot should activate AUTOMATICALLY
+   when Jennifer approves an Ajan's badge... The 30-day trial must start from
+   the approval date, not from the first time the Ajan opened the app."
+   - once per Ajan and per phone (the AjanPilot unique indexes + checks here)
+   - linked to the verified badge AND its phone number
+   - never shortens free days the phone already has
+   - only an ACTIVE badge (suspended / revoked / expired / pending get nothing new)
+   - the badge's phone corrected later = the pilot follows to the new number
+     (Jeffery 2 Nov: the Ajan's app must show the SAME days as Jennifer's console)
+   Runs when a badge is saved in the console, and as a sweep (boot + every 30
+   min) that also catches up the Ajans approved before this existed. */
+const AUTO_PILOT_DAYS = 30;
+async function ensureAutoPilot(a, by, now) {
+  now = now || new Date();
+  if (!a || a.status !== 'active' || a.publicState(now) !== 'active') return { skipped: 'not_active' };
+  /* the approval date; for a badge approved before approvedAt was recorded, the "active" entry in its history */
+  const act = (a.history || []).filter((h) => h.action === 'active' && h.at).slice(-1)[0];
+  const approvedOn = a.approvedAt || (act && act.at) || a.createdAt;
+  const key = phoneKey(a.phone);
+  if (key.length < 8) return { skipped: 'no_phone' };
+  const mine = await AjanPilot.findOne({ agentId: a.agentId });
+  if (mine) {
+    if (mine.phoneKey === key) return { kept: true };
+    /* the badge's number was corrected: the same pilot moves to the right phone */
+    const other = await AjanPilot.findOne({ phoneKey: key, agentId: { $ne: a.agentId } }).select('agentId');
+    if (other) return { skipped: 'phone_in_other_pilot', agentId: other.agentId };
+    const fromKey = mine.phoneKey;
+    mine.phoneKey = key; mine.phone = a.phone;
+    mine.history.push({ at: now, by: by || 'system', action: 'phone_moved', endsAt: mine.endsAt, note: fromKey + ' → ' + key });
+    await mine.save();
+    if (!mine.cancelledAt && mine.endsAt > now) await setTrialEndNoShorten(key, a.phone, a.name, a.agentId, mine.endsAt, now);
+    return { moved: true };
+  }
+  const other = await AjanPilot.findOne({ phoneKey: key }).select('agentId');
+  if (other) return { skipped: 'phone_in_other_pilot', agentId: other.agentId };
+  const start = new Date(approvedOn);
+  const endsAt = new Date(start.getTime() + AUTO_PILOT_DAYS * DAY_MS);
+  const trial = await PosTrial.findOne({ phoneKey: key }).lean();
+  const prev = trial ? new Date(trial.trialEndsAt) : null;
+  let p;
+  try {
+    p = await AjanPilot.create({ agentId: a.agentId, phoneKey: key, phone: a.phone, name: a.name, referralCode: a.referralCode || '',
+      startedAt: start, endsAt, prevTrialEndsAt: prev,
+      history: [{ at: now, by: by || 'system', action: 'auto', days: AUTO_PILOT_DAYS, endsAt,
+                  note: 'badge approved ' + start.toISOString().slice(0, 10) + (prev && prev > endsAt ? '; phone already had a later end, kept' : '') }] });
+  } catch (e) {
+    if (e && e.code === 11000) return { skipped: 'exists' };
+    throw e;
+  }
+  if (endsAt > now) await setTrialEndNoShorten(key, a.phone, a.name, a.agentId, endsAt, now);
+  return { created: true, endsAt };
+}
+/* like setTrialEnd, but a later date already on the phone always wins */
+async function setTrialEndNoShorten(key, phone, name, agentId, endsAt, now) {
+  const t = await PosTrial.findOne({ phoneKey: key }).lean();
+  if (t && new Date(t.trialEndsAt) >= endsAt) {
+    await PosTrial.updateOne({ phoneKey: key }, { $set: { pilotAgentId: agentId } });
+    return;
+  }
+  await setTrialEnd(key, phone, name, agentId, endsAt, now);
+}
+let sweeping = false;
+async function pilotSweep() {
+  if (sweeping) return null; sweeping = true;
+  const out = { created: 0, moved: 0, skipped: [] };
+  try {
+    const list = await CertifiedAgent.find({ status: 'active' });
+    for (const a of list) {
+      try {
+        const r = await ensureAutoPilot(a, 'auto-sweep');
+        if (r.created) out.created++; else if (r.moved) out.moved++;
+        else if (r.skipped && r.skipped !== 'not_active') out.skipped.push(a.agentId + ':' + r.skipped);
+      } catch (e) { out.skipped.push(a.agentId + ':error'); }
+    }
+    if (out.created || out.moved || out.skipped.length) console.log('[PILOT] auto sweep', JSON.stringify(out));
+    return out;
+  } finally { sweeping = false; }
+}
+if (process.env.NODE_ENV !== 'test') {
+  setTimeout(() => { pilotSweep().catch(() => {}); }, 20000);
+  setInterval(() => { pilotSweep().catch(() => {}); }, 30 * 60 * 1000);
+}
+router.post('/admin/pilot/sweep', async (req, res) => {
+  try { res.json(await pilotSweep() || { busy: true }); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.post('/admin/pilot/:agentId', async (req, res) => {
   try {
     const b = req.body || {};
@@ -823,3 +917,5 @@ router.post('/admin/drivers/:id/:act', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.pilotSweep = pilotSweep;
+module.exports.ensureAutoPilot = ensureAutoPilot;

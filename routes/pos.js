@@ -144,6 +144,15 @@ router.post('/trial', async (req, res) => {
 
     const ends = new Date(row.trialEndsAt);
     const daysLeft = Math.ceil((ends.getTime() - now.getTime()) / 86400000);
+    /* 2 Nov 2026: the Ajan sees the SAME pilot figures as Jennifer's console */
+    let pilot = null;
+    if (row.pilotAgentId) {
+      try {
+        const P = await require('../models/AjanPilot').findOne({ agentId: row.pilotAgentId }).lean();
+        if (P) pilot = { startedAt: P.startedAt, endsAt: P.endsAt, cancelled: !!P.cancelledAt,
+                         daysLeft: P.cancelledAt ? 0 : Math.max(0, Math.ceil((new Date(P.endsAt) - now) / 86400000)) };
+      } catch (e) { pilot = null; }
+    }
 
     res.json({
       ok: true,
@@ -151,6 +160,7 @@ router.post('/trial', async (req, res) => {
       daysLeft: daysLeft,
       expired: daysLeft < 0,
       firstTime: createdNow,
+      pilot: pilot,
       serverTime: now.toISOString()
     });
   } catch (e) {
