@@ -1056,13 +1056,17 @@ async function msw(method, path, body) {
   const key = process.env.INTERNAL_SERVICE_KEY;
   if (!key) return { status: 503, data: { error: 'link_unavailable' } };
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 60000);
+  const t = setTimeout(() => ctl.abort(), 90000);
   try {
     const o = { method, headers: { 'x-internal-key': key }, signal: ctl.signal };
     if (body !== undefined) { o.headers['Content-Type'] = 'application/json'; o.body = JSON.stringify(body); }
     const r = await fetch(MSW_API + '/api/drivers' + path, o);
-    const data = await r.json().catch(() => ({}));
     if (r.status === 401 || r.status === 503) return { status: 503, data: { error: 'link_unavailable' } };
+    /* 3 Nov 2026 (Jennifer: "6 dokiman" on the card, "Pa gen dokiman" when opened): a body that did not
+       arrive whole (slow MsouWout, 1-2 MB of photos, or the 60 s timer) used to become {} with a 200 -
+       an EMPTY answer passed off as a real one. Now it is an error the console can say. */
+    let data;
+    try { data = await r.json(); } catch (e) { return { status: 502, data: { error: 'link_unavailable' } }; }
     return { status: r.status, data };
   } catch (e) {
     return { status: 503, data: { error: 'link_unavailable' } };
