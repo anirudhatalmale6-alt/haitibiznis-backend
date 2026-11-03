@@ -199,6 +199,123 @@ router.get('/my-driver-stats', async (req, res) => {
   }
 });
 
+/* ═══ THE AJAN'S OWN LOGIN — OPTION B (3 Nov 2026) ═══════════════════════════
+   Jeffery: "Jennifer provides each certified Ajan with a one-time activation code.
+   The Ajan creates their own secure PIN, linked to their verified badge and phone
+   number. Once authenticated, the Ajan must be able to correct documents for ALL
+   drivers credited to them... Only the assigned Ajan or authorized admin can
+   modify documents... Every correction is logged."
+   - the code: 6 digits, ONE use, 72 h, scrypt-hashed; 5 wrong tries = 15 min lock
+   - the PIN: 4-6 digits, not 0000/1234-type, scrypt-hashed
+   - the session: signed (HMAC), 60 days, revoked by ajanTokenV (new code / revoke)
+   - a correction: the driver must be credited to THIS Ajan's code AND pending;
+     it goes to MsouWout as "ajan:<badge>" (who + when on the photo + history) */
+const crypto = require('crypto');
+const AJ_SECRET = () => process.env.AJAN_TOKEN_SECRET || process.env.INTERNAL_SERVICE_KEY || '';
+const AJ_DAY = 86400000;
+function scryptHash(v, salt) { salt = salt || crypto.randomBytes(16).toString('hex'); return salt + ':' + crypto.scryptSync(String(v), salt, 32).toString('hex'); }
+function scryptOk(v, stored) {
+  if (!stored || stored.indexOf(':') < 0) return false;
+  const [salt, h] = stored.split(':'); const x = crypto.scryptSync(String(v), salt, 32), y = Buffer.from(h, 'hex');
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+function ajanToken(a) {
+  const p = Buffer.from(JSON.stringify({ a: a.agentId, v: a.ajanTokenV || 0, e: Date.now() + 60 * AJ_DAY })).toString('base64url');
+  return p + '.' + crypto.createHmac('sha256', AJ_SECRET()).update('ajan.' + p).digest('base64url');
+}
+async function ajanAuth(req, res, next) {
+  try {
+    const t = String(req.headers['x-ajan-token'] || ''), i = t.indexOf('.');
+    if (i < 1 || !AJ_SECRET()) return res.status(401).json({ error: 'login_required' });
+    const p = t.slice(0, i), sig = t.slice(i + 1);
+    const want = crypto.createHmac('sha256', AJ_SECRET()).update('ajan.' + p).digest('base64url');
+    if (want.length !== sig.length || !crypto.timingSafeEqual(Buffer.from(want), Buffer.from(sig))) return res.status(401).json({ error: 'login_required' });
+    const j = JSON.parse(Buffer.from(p, 'base64url').toString());
+    if (!j.e || j.e < Date.now()) return res.status(401).json({ error: 'login_expired' });
+    const a = await CertifiedAgent.findOne({ agentId: j.a }).select('+ajanPinHash');
+    if (!a || !a.ajanPinHash || (a.ajanTokenV || 0) !== j.v || a.status !== 'active' || a.publicState() !== 'active') return res.status(401).json({ error: 'login_required' });
+    req.ajan = a; next();
+  } catch (e) { res.status(401).json({ error: 'login_required' }); }
+}
+const WEAK_PINS = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '123456', '000000', '111111', '654321'];
+function pinOk(p) { return /^\d{4,6}$/.test(p) && WEAK_PINS.indexOf(p) < 0; }
+async function badgeByPhone(phone) {
+  const k = last8(phone); if (!k) return null;
+  const list = await CertifiedAgent.find({ status: 'active' }).select('+ajanPinHash +ajanCodeHash');
+  return list.find((x) => last8(x.phone) === k && x.publicState() === 'active') || null;
+}
+async function ajanFail(a) {
+  a.ajanFails = (a.ajanFails || 0) + 1;
+  if (a.ajanFails >= 5) { a.ajanLockedUntil = new Date(Date.now() + 15 * 60000); a.ajanFails = 0; }
+  await a.save();
+}
+function ajanPublic(a) { return { agentId: a.agentId, name: a.name, code: a.referralCode || '' }; }
+
+router.post('/ajan/activate', async (req, res) => {
+  try {
+    if (tooMany(req, 20, 10 * 60000)) return res.status(429).json({ error: 'too_many' });
+    const b = req.body || {}, code = String(b.code || '').replace(/\D/g, ''), pin = String(b.pin || '');
+    if (!pinOk(pin)) return res.status(400).json({ error: 'weak_pin' });
+    const a = await badgeByPhone(b.phone);
+    if (!a) return res.status(401).json({ error: 'invalid' });
+    if (a.ajanLockedUntil && a.ajanLockedUntil > new Date()) return res.status(429).json({ error: 'locked' });
+    if (!a.ajanCodeHash || !a.ajanCodeExpires || a.ajanCodeExpires < new Date() || !scryptOk(code + '|' + a.agentId, a.ajanCodeHash)) {
+      await ajanFail(a); return res.status(401).json({ error: 'invalid' });
+    }
+    a.ajanPinHash = scryptHash(pin); a.ajanPinSetAt = new Date(); a.ajanCodeHash = ''; a.ajanCodeExpires = null;
+    a.ajanFails = 0; a.ajanLockedUntil = null; a.ajanTokenV = (a.ajanTokenV || 0) + 1;
+    a.history.push({ action: 'ajan_pin', note: 'PIN created with the activation code' });
+    if (a.history.length > 50) a.history = a.history.slice(-50);
+    await a.save();
+    res.json({ token: ajanToken(a), agent: ajanPublic(a) });
+  } catch (e) { res.status(500).json({ error: 'server' }); }
+});
+router.post('/ajan/login', async (req, res) => {
+  try {
+    if (tooMany(req, 30, 10 * 60000)) return res.status(429).json({ error: 'too_many' });
+    const b = req.body || {}, pin = String(b.pin || '');
+    const a = await badgeByPhone(b.phone);
+    if (!a || !a.ajanPinHash) return res.status(401).json({ error: a ? 'no_pin' : 'invalid' });
+    if (a.ajanLockedUntil && a.ajanLockedUntil > new Date()) return res.status(429).json({ error: 'locked' });
+    if (!scryptOk(pin, a.ajanPinHash)) { await ajanFail(a); return res.status(401).json({ error: 'invalid' }); }
+    if (a.ajanFails) { a.ajanFails = 0; await a.save(); }
+    res.json({ token: ajanToken(a), agent: ajanPublic(a) });
+  } catch (e) { res.status(500).json({ error: 'server' }); }
+});
+router.get('/ajan/me', ajanAuth, (req, res) => res.json({ agent: ajanPublic(req.ajan) }));
+/* every driver credited to this Ajan, however he registered, and exactly what is missing / to redo */
+const AJ_NEED = ['selfie', 'id', 'license', 'oavct', 'vehicle'];
+router.get('/ajan/drivers', ajanAuth, async (req, res) => {
+  const code = String(req.ajan.referralCode || '').toUpperCase();
+  if (!code) return res.json({ drivers: [] });
+  const r = await msw('GET', '/internal/console/list?status=all');
+  if (r.status !== 200) return res.status(503).json({ error: 'link_unavailable' });
+  const today = new Date().toISOString().slice(0, 10);
+  const mine = (r.data.drivers || []).filter((d) => d.referral_attached && String(d.referral_code || '').toUpperCase() === code);
+  res.set('Cache-Control', 'no-store');
+  res.json({ drivers: mine.map((d) => {
+    const exp = d.oavct_expiry ? new Date(d.oavct_expiry).toISOString().slice(0, 10) : '';
+    return { id: d.id, name: d.full_name, phone: d.phone, status: d.status, service: d.preferred_service, vehicle: d.vehicle_type,
+      at: d.created_at, docs: d.doc_types || [], missing: AJ_NEED.filter((t) => !(d.doc_types || []).includes(t)),
+      fix: d.fix_docs || [], fixNote: (d.fix_docs || []).length ? (d.fix_note || '') : '', oavct: !exp ? 'missing' : (exp < today ? 'expired' : 'ok'), oavctExpiry: exp,
+      reason: d.status === 'rejected' ? (d.rejection_reason || '') : '' };
+  }) });
+});
+router.post('/ajan/drivers/:id/document', ajanAuth, async (req, res) => {
+  const id = String(req.params.id || '');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(404).json({ error: 'not_found' });
+  const b = req.body || {}, t = String(b.doc_type || '');
+  if (!['selfie', 'id', 'license', 'oavct', 'vehicle', 'insurance'].includes(t)) return res.status(400).json({ error: 'bad_type' });
+  const d = await msw('GET', '/internal/console/' + id);
+  if (d.status !== 200 || !d.data.driver) return res.status(404).json({ error: 'not_found' });
+  const drv = d.data.driver;
+  /* only HIS driver - the one his code is credited with - and only while pending */
+  if (!drv.referral_attached || String(drv.referral_code || '').toUpperCase() !== String(req.ajan.referralCode || '').toUpperCase()) return res.status(403).json({ error: 'not_your_driver' });
+  if (drv.status !== 'pending') return res.status(409).json({ error: 'not_pending' });
+  const r = await msw('POST', '/internal/console/' + id + '/document', { by: 'ajan:' + req.ajan.agentId, doc_type: t, image_data: b.image_data });
+  res.status(r.status).json(r.data);
+});
+
 router.use('/admin', requirePin);
 
 function adminView(a) {
@@ -207,7 +324,8 @@ function adminView(a) {
     referralCode: a.referralCode, services: a.services, certifiedAt: a.certifiedAt,
     expiresAt: a.expiresAt, status: a.status, state: a.publicState(), statusNote: a.statusNote,
     source: a.source, idMatched: a.idMatched !== false, photo: !!a.photoAt, approvedAt: a.approvedAt, submissions: a.submissions,
-    createdAt: a.createdAt, updatedAt: a.updatedAt, history: (a.history || []).slice(-10)
+    createdAt: a.createdAt, updatedAt: a.updatedAt, history: (a.history || []).slice(-10),
+    ajan: { pinSetAt: a.ajanPinSetAt || null, codePending: !!(a.ajanCodeExpires && a.ajanCodeExpires > new Date()), codeExpires: a.ajanCodeExpires || null }
   };
 }
 
@@ -349,6 +467,35 @@ router.patch('/admin/:agentId', async (req, res) => {
 
 /* The console sees the photo of a PENDING agent too - that is what it checks
    before approving. Fetched with the console code, shown from a blob. */
+/* Jennifer: a one-time activation code for this Ajan (shown ONCE). A new code also logs
+   out every phone of his (ajanTokenV++ when it is used). */
+router.post('/admin/:agentId/ajan-code', async (req, res) => {
+  try {
+    const a = await CertifiedAgent.findOne({ agentId: normId(req.params.agentId) });
+    if (!a) return res.status(404).json({ error: 'not_found' });
+    if (a.status !== 'active' || a.publicState() !== 'active') return res.status(422).json({ error: 'not_active' });
+    if (last8(a.phone).length < 8) return res.status(422).json({ error: 'no_phone' });
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    a.ajanCodeHash = scryptHash(code + '|' + a.agentId); a.ajanCodeExpires = new Date(Date.now() + 72 * 3600000);
+    a.ajanFails = 0; a.ajanLockedUntil = null;
+    a.history.push({ action: 'ajan_code', note: 'activation code by ' + String((req.body && req.body.by) || 'console').slice(0, 40) });
+    if (a.history.length > 50) a.history = a.history.slice(-50);
+    await a.save();
+    res.json({ code, expiresAt: a.ajanCodeExpires, phone: a.phone });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+router.post('/admin/:agentId/ajan-revoke', async (req, res) => {
+  try {
+    const a = await CertifiedAgent.findOne({ agentId: normId(req.params.agentId) });
+    if (!a) return res.status(404).json({ error: 'not_found' });
+    a.ajanPinHash = ''; a.ajanPinSetAt = null; a.ajanCodeHash = ''; a.ajanCodeExpires = null; a.ajanTokenV = (a.ajanTokenV || 0) + 1;
+    a.history.push({ action: 'ajan_revoke', note: 'PIN removed by ' + String((req.body && req.body.by) || 'console').slice(0, 40) });
+    if (a.history.length > 50) a.history = a.history.slice(-50);
+    await a.save();
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.get('/admin/:agentId/photo', async (req, res) => {
   try {
     const a = await CertifiedAgent.findOne({ agentId: normId(req.params.agentId) }).select('+photo photoMime');

@@ -54,6 +54,17 @@ const agentSchema = new mongoose.Schema({
   photoAt: { type: Date, default: null },
 
   approvedAt: { type: Date, default: null },
+
+  /* 3 Nov 2026 (Jeffery, OPTION B): the Ajan's own login in LajanMaker. Jennifer
+     gives a one-time activation code; the Ajan creates his PIN with it. Hashes
+     only (scrypt), never returned by default. ajanTokenV++ logs every phone out. */
+  ajanPinHash: { type: String, default: '', select: false },
+  ajanPinSetAt: { type: Date, default: null },
+  ajanCodeHash: { type: String, default: '', select: false },
+  ajanCodeExpires: { type: Date, default: null },
+  ajanFails: { type: Number, default: 0 },
+  ajanLockedUntil: { type: Date, default: null },
+  ajanTokenV: { type: Number, default: 0 },
   submissions: { type: Number, default: 0 },
   lastSubmittedAt: { type: Date, default: null },
 
