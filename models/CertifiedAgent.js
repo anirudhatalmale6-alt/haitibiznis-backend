@@ -65,6 +65,22 @@ const agentSchema = new mongoose.Schema({
   ajanFails: { type: Number, default: 0 },
   ajanLockedUntil: { type: Date, default: null },
   ajanTokenV: { type: Number, default: 0 },
+  /* 3 Nov 2026 (Jeffery, OPTION C): the Ajan's phones. A phone asks once; Jennifer verifies the Ajan
+     (he reads her the 4-digit check code on his screen) and approves it with one tap. Only a hash of the
+     phone's own random key is kept. state: pending | approved | refused | revoked */
+  ajanDevices: [{
+    _id: false,
+    id: { type: String, required: true },
+    keyHash: { type: String, default: '' },
+    check: { type: String, default: '' },
+    label: { type: String, default: '' },
+    state: { type: String, default: 'pending' },
+    via: { type: String, default: '' },
+    requestedAt: { type: Date, default: Date.now },
+    decidedAt: { type: Date, default: null },
+    decidedBy: { type: String, default: '' },
+    lastSeenAt: { type: Date, default: null }
+  }],
   submissions: { type: Number, default: 0 },
   lastSubmittedAt: { type: Date, default: null },
 

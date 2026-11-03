@@ -17,6 +17,8 @@
  * person at HaitiBiznis looked at it.
  * ═══════════════════════════════════════════════════════════════════════════ */
 const express = require('express');
+/* Jeffery 3 Nov: the national ID card is OPTIONAL (the licence carries the NIF) - 4 required photos */
+const AJ_NEED = ['selfie', 'license', 'oavct', 'vehicle'];
 const router = express.Router();
 const CertifiedAgent = require('../models/CertifiedAgent');
 const { requirePin } = require('../utils/consolePin');
@@ -192,7 +194,7 @@ router.get('/my-driver-stats', async (req, res) => {
                drivers: mine.slice(0, 100).map((d) => ({ name: short(d.full_name), status: d.status, service: d.preferred_service || 'both',
                  at: d.created_at, photos: d.doc_count, reason: d.status === 'rejected' ? (d.rejection_reason || '') : '', fix: d.fix_docs || [],
                  /* 1 Nov 2026, Jeffery: "when a doc is missing or not updated or expired it should show it to them" */
-                 missing: ['selfie', 'id', 'license', 'oavct', 'vehicle'].filter((t) => !(d.doc_types || []).includes(t)),
+                 missing: AJ_NEED.filter((t) => !(d.doc_types || []).includes(t)),
                  oavct: !d.oavct_expiry ? 'missing' : (new Date(d.oavct_expiry).toISOString().slice(0, 10) < new Date().toISOString().slice(0, 10) ? 'expired' : 'ok') })) });
   } catch (e) {
     res.status(500).json({ error: 'server' });
@@ -205,22 +207,21 @@ router.get('/my-driver-stats', async (req, res) => {
    number. Once authenticated, the Ajan must be able to correct documents for ALL
    drivers credited to them... Only the assigned Ajan or authorized admin can
    modify documents... Every correction is logged."
-   - the code: 6 digits, ONE use, 72 h, scrypt-hashed; 5 wrong tries = 15 min lock
-   - the PIN: 4-6 digits, not 0000/1234-type, scrypt-hashed
-   - the session: signed (HMAC), 60 days, revoked by ajanTokenV (new code / revoke)
+   - 3 Nov (later), OPTION C: activation codes + PINs RETIRED ("too complicated" - Jennifer). A phone
+     is approved by Jennifer with one tap (see OPTION C below); PIN sessions already open stay valid.
+   - the session: signed (HMAC), revoked by ajanTokenV (disconnect all) or by the phone's state
    - a correction: the driver must be credited to THIS Ajan's code AND pending;
      it goes to MsouWout as "ajan:<badge>" (who + when on the photo + history) */
 const crypto = require('crypto');
 const AJ_SECRET = () => process.env.AJAN_TOKEN_SECRET || process.env.INTERNAL_SERVICE_KEY || '';
 const AJ_DAY = 86400000;
-function scryptHash(v, salt) { salt = salt || crypto.randomBytes(16).toString('hex'); return salt + ':' + crypto.scryptSync(String(v), salt, 32).toString('hex'); }
-function scryptOk(v, stored) {
-  if (!stored || stored.indexOf(':') < 0) return false;
-  const [salt, h] = stored.split(':'); const x = crypto.scryptSync(String(v), salt, 32), y = Buffer.from(h, 'hex');
-  return x.length === y.length && crypto.timingSafeEqual(x, y);
-}
-function ajanToken(a) {
-  const p = Buffer.from(JSON.stringify({ a: a.agentId, v: a.ajanTokenV || 0, e: Date.now() + 60 * AJ_DAY })).toString('base64url');
+/* OPTION C: a phone's session carries its device id (d) and lasts 30 days; the phone renews it with its
+   own key (POST /ajan/device/status) as long as Jennifer has not disconnected it. Old PIN sessions (no d)
+   keep working until they expire, so nobody loses access during the change. */
+function ajanToken(a, devId) {
+  const t = { a: a.agentId, v: a.ajanTokenV || 0, e: Date.now() + (devId ? 30 : 60) * AJ_DAY };
+  if (devId) t.d = devId;
+  const p = Buffer.from(JSON.stringify(t)).toString('base64url');
   return p + '.' + crypto.createHmac('sha256', AJ_SECRET()).update('ajan.' + p).digest('base64url');
 }
 async function ajanAuth(req, res, next) {
@@ -233,58 +234,113 @@ async function ajanAuth(req, res, next) {
     const j = JSON.parse(Buffer.from(p, 'base64url').toString());
     if (!j.e || j.e < Date.now()) return res.status(401).json({ error: 'login_expired' });
     const a = await CertifiedAgent.findOne({ agentId: j.a }).select('+ajanPinHash');
-    if (!a || !a.ajanPinHash || (a.ajanTokenV || 0) !== j.v || a.status !== 'active' || a.publicState() !== 'active') return res.status(401).json({ error: 'login_required' });
+    if (!a || (a.ajanTokenV || 0) !== j.v || a.status !== 'active' || a.publicState() !== 'active') return res.status(401).json({ error: 'login_required' });
+    if (j.d) {
+      const dev = (a.ajanDevices || []).find((x) => x.id === j.d);
+      if (!dev || dev.state !== 'approved') return res.status(401).json({ error: 'device_off' });
+      if (!dev.lastSeenAt || Date.now() - dev.lastSeenAt.getTime() > 3600000) {
+        await CertifiedAgent.updateOne({ _id: a._id, 'ajanDevices.id': dev.id }, { $set: { 'ajanDevices.$.lastSeenAt': new Date() } });
+      }
+      req.ajanDevice = dev;
+    } else if (!a.ajanPinHash) return res.status(401).json({ error: 'login_required' });
     req.ajan = a; next();
   } catch (e) { res.status(401).json({ error: 'login_required' }); }
 }
-const WEAK_PINS = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '123456', '000000', '111111', '654321'];
-function pinOk(p) { return /^\d{4,6}$/.test(p) && WEAK_PINS.indexOf(p) < 0; }
 async function badgeByPhone(phone) {
   const k = last8(phone); if (!k) return null;
   const list = await CertifiedAgent.find({ status: 'active' }).select('+ajanPinHash +ajanCodeHash');
   return list.find((x) => last8(x.phone) === k && x.publicState() === 'active') || null;
 }
-async function ajanFail(a) {
-  a.ajanFails = (a.ajanFails || 0) + 1;
-  if (a.ajanFails >= 5) { a.ajanLockedUntil = new Date(Date.now() + 15 * 60000); a.ajanFails = 0; }
-  await a.save();
-}
 function ajanPublic(a) { return { agentId: a.agentId, name: a.name, code: a.referralCode || '' }; }
 
-router.post('/ajan/activate', async (req, res) => {
-  try {
-    if (tooMany(req, 20, 10 * 60000)) return res.status(429).json({ error: 'too_many' });
-    const b = req.body || {}, code = String(b.code || '').replace(/\D/g, ''), pin = String(b.pin || '');
-    if (!pinOk(pin)) return res.status(400).json({ error: 'weak_pin' });
-    const a = await badgeByPhone(b.phone);
-    if (!a) return res.status(401).json({ error: 'invalid' });
-    if (a.ajanLockedUntil && a.ajanLockedUntil > new Date()) return res.status(429).json({ error: 'locked' });
-    if (!a.ajanCodeHash || !a.ajanCodeExpires || a.ajanCodeExpires < new Date() || !scryptOk(code + '|' + a.agentId, a.ajanCodeHash)) {
-      await ajanFail(a); return res.status(401).json({ error: 'invalid' });
-    }
-    a.ajanPinHash = scryptHash(pin); a.ajanPinSetAt = new Date(); a.ajanCodeHash = ''; a.ajanCodeExpires = null;
-    a.ajanFails = 0; a.ajanLockedUntil = null; a.ajanTokenV = (a.ajanTokenV || 0) + 1;
-    a.history.push({ action: 'ajan_pin', note: 'PIN created with the activation code' });
-    if (a.history.length > 50) a.history = a.history.slice(-50);
-    await a.save();
-    res.json({ token: ajanToken(a), agent: ajanPublic(a) });
-  } catch (e) { res.status(500).json({ error: 'server' }); }
-});
-router.post('/ajan/login', async (req, res) => {
-  try {
-    if (tooMany(req, 30, 10 * 60000)) return res.status(429).json({ error: 'too_many' });
-    const b = req.body || {}, pin = String(b.pin || '');
-    const a = await badgeByPhone(b.phone);
-    if (!a || !a.ajanPinHash) return res.status(401).json({ error: a ? 'no_pin' : 'invalid' });
-    if (a.ajanLockedUntil && a.ajanLockedUntil > new Date()) return res.status(429).json({ error: 'locked' });
-    if (!scryptOk(pin, a.ajanPinHash)) { await ajanFail(a); return res.status(401).json({ error: 'invalid' }); }
-    if (a.ajanFails) { a.ajanFails = 0; await a.save(); }
-    res.json({ token: ajanToken(a), agent: ajanPublic(a) });
-  } catch (e) { res.status(500).json({ error: 'server' }); }
-});
+/* OPTION C (3 Nov, Jeffery): no more activation codes / PINs for NEW phones - a new phone asks
+   Jennifer (POST /ajan/device/request). Sessions already open keep working. */
+router.post('/ajan/activate', (req, res) => res.status(410).json({ error: 'use_device' }));
+router.post('/ajan/login', (req, res) => res.status(410).json({ error: 'use_device' }));
 router.get('/ajan/me', ajanAuth, (req, res) => res.json({ agent: ajanPublic(req.ajan) }));
+
+/* ═══ OPTION C — ONE-TAP PHONE APPROVAL (3 Nov 2026, Jeffery "YES — OPTION C APPROVED") ═══
+   1. LajanMaker makes a random key that never leaves the phone except to this server, and asks with the
+      badge phone number. That only creates a REQUEST: a typed phone number opens nothing.
+   2. Jennifer sees the request in ajan-admin.html with a 4-digit check code; she verifies the Ajan (he
+      reads her the code shown on HIS screen) and taps ✅. Refuse / disconnect = one tap.
+   3. The phone then gets a server-signed session tied to the badge AND that phone (30 days, renewed with
+      the phone's key while still approved). A new phone = a new request. Suspended / revoked badge = off. */
+const DEV_KEY = /^[A-Za-z0-9_-]{32,128}$/;
+/* own counters (not the shared per-address one): many Haitian phones share one carrier address */
+const devHits = new Map();
+function devTooMany(k, max, windowMs) {
+  const now = Date.now(), list = (devHits.get(k) || []).filter((t) => now - t < windowMs);
+  list.push(now); devHits.set(k, list);
+  if (devHits.size > 5000) for (const [x, v] of devHits) if (!v.length || now - v[v.length - 1] > windowMs) devHits.delete(x);
+  return list.length > max;
+}
+const sha = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
+function devView(d) { return { id: d.id, check: d.check, label: d.label, state: d.state, via: d.via, requestedAt: d.requestedAt, decidedAt: d.decidedAt, decidedBy: d.decidedBy, lastSeenAt: d.lastSeenAt }; }
+function hist(a, action, note) { a.history.push({ action, note: String(note).slice(0, 120) }); if (a.history.length > 50) a.history = a.history.slice(-50); }
+router.post('/ajan/device/request', async (req, res) => {
+  try {
+    const b = req.body || {}, key = String(b.key || '');
+    if (devTooMany('rq|' + clientIp(req), 60, 10 * 60000) || devTooMany('ph|' + last8(b.phone), 10, 10 * 60000)) return res.status(429).json({ error: 'too_many' });
+    if (!DEV_KEY.test(key)) return res.status(400).json({ error: 'bad_key' });
+    const a = await badgeByPhone(b.phone);
+    if (!a) return res.status(404).json({ error: 'no_badge' });
+    const kh = sha(key);
+    let d = (a.ajanDevices || []).find((x) => x.keyHash === kh);
+    if (!d) {
+      /* at most 3 open requests per badge, at most 20 phones remembered */
+      const open = a.ajanDevices.filter((x) => x.state === 'pending');
+      if (open.length >= 3) open.slice(0, open.length - 2).forEach((x) => { x.state = 'refused'; x.decidedAt = new Date(); x.decidedBy = 'auto (newer request)'; });
+      d = { id: crypto.randomBytes(8).toString('hex'), keyHash: kh, check: String(crypto.randomInt(1000, 10000)),
+            label: String(b.label || '').replace(/[<>]/g, '').slice(0, 60), state: 'pending', via: 'request', requestedAt: new Date() };
+      a.ajanDevices.push(d);
+      while (a.ajanDevices.length > 20) {
+        const i = a.ajanDevices.findIndex((x) => x.state !== 'approved' && x.state !== 'pending');
+        if (i < 0) break; a.ajanDevices.splice(i, 1);
+      }
+      hist(a, 'ajan_device_request', 'phone ' + d.id + ' asks to connect (' + (d.label || '?') + ')');
+      await a.save();
+      d = a.ajanDevices.find((x) => x.keyHash === kh);
+    }
+    res.json({ deviceId: d.id, state: d.state, check: d.check, name: String(a.name || '').split(' ')[0] });
+  } catch (e) { res.status(500).json({ error: 'server' }); }
+});
+router.post('/ajan/device/status', async (req, res) => {
+  try {
+    const b = req.body || {}, id = String(b.deviceId || ''), key = String(b.key || '');
+    if (devTooMany('st|' + id, 120, 10 * 60000) || devTooMany('si|' + clientIp(req), 1200, 10 * 60000)) return res.status(429).json({ error: 'too_many' });
+    if (!/^[0-9a-f]{16}$/.test(id) || !DEV_KEY.test(key)) return res.status(404).json({ error: 'not_found' });
+    const a = await CertifiedAgent.findOne({ 'ajanDevices.id': id });
+    const d = a && a.ajanDevices.find((x) => x.id === id);
+    const kh = Buffer.from(sha(key)), want = Buffer.from(d ? d.keyHash : '0'.repeat(64));
+    if (!d || kh.length !== want.length || !crypto.timingSafeEqual(kh, want)) return res.status(404).json({ error: 'not_found' });
+    if (a.status !== 'active' || a.publicState() !== 'active') return res.json({ state: 'badge_inactive' });
+    if (d.state !== 'approved') return res.json({ state: d.state, check: d.check });
+    res.json({ state: 'approved', token: ajanToken(a, d.id), agent: ajanPublic(a) });
+  } catch (e) { res.status(500).json({ error: 'server' }); }
+});
+/* a phone already signed in with the old PIN becomes an approved phone (no new step, no lost access) */
+router.post('/ajan/device/adopt', ajanAuth, async (req, res) => {
+  try {
+    if (req.ajanDevice) return res.status(400).json({ error: 'already_device' });
+    const key = String((req.body || {}).key || '');
+    if (!DEV_KEY.test(key)) return res.status(400).json({ error: 'bad_key' });
+    const a = req.ajan, kh = sha(key);
+    let d = a.ajanDevices.find((x) => x.keyHash === kh);
+    if (!d) {
+      a.ajanDevices.push({ id: crypto.randomBytes(8).toString('hex'), keyHash: kh, check: String(crypto.randomInt(1000, 10000)),
+        label: String((req.body || {}).label || '').replace(/[<>]/g, '').slice(0, 60), state: 'approved', via: 'pin',
+        requestedAt: new Date(), decidedAt: new Date(), decidedBy: 'PIN (before 3 Nov)', lastSeenAt: new Date() });
+      hist(a, 'ajan_device_adopt', 'phone already signed in with the PIN kept connected');
+      await a.save();
+      d = a.ajanDevices.find((x) => x.keyHash === kh);
+    }
+    if (d.state !== 'approved') return res.status(401).json({ error: 'device_off' });
+    res.json({ deviceId: d.id, token: ajanToken(a, d.id), agent: ajanPublic(a) });
+  } catch (e) { res.status(500).json({ error: 'server' }); }
+});
 /* every driver credited to this Ajan, however he registered, and exactly what is missing / to redo */
-const AJ_NEED = ['selfie', 'id', 'license', 'oavct', 'vehicle'];
+
 router.get('/ajan/drivers', ajanAuth, async (req, res) => {
   const code = String(req.ajan.referralCode || '').toUpperCase();
   if (!code) return res.json({ drivers: [] });
@@ -325,7 +381,8 @@ function adminView(a) {
     expiresAt: a.expiresAt, status: a.status, state: a.publicState(), statusNote: a.statusNote,
     source: a.source, idMatched: a.idMatched !== false, photo: !!a.photoAt, approvedAt: a.approvedAt, submissions: a.submissions,
     createdAt: a.createdAt, updatedAt: a.updatedAt, history: (a.history || []).slice(-10),
-    ajan: { pinSetAt: a.ajanPinSetAt || null, codePending: !!(a.ajanCodeExpires && a.ajanCodeExpires > new Date()), codeExpires: a.ajanCodeExpires || null }
+    ajan: { pinSetAt: a.ajanPinSetAt || null, codePending: !!(a.ajanCodeExpires && a.ajanCodeExpires > new Date()), codeExpires: a.ajanCodeExpires || null,
+            devices: (a.ajanDevices || []).filter((d) => d.state === 'pending' || d.state === 'approved').map(devView) }
   };
 }
 
@@ -469,19 +526,41 @@ router.patch('/admin/:agentId', async (req, res) => {
    before approving. Fetched with the console code, shown from a blob. */
 /* Jennifer: a one-time activation code for this Ajan (shown ONCE). A new code also logs
    out every phone of his (ajanTokenV++ when it is used). */
-router.post('/admin/:agentId/ajan-code', async (req, res) => {
+/* OPTION C: activation codes are retired (a new phone asks Jennifer instead) */
+router.post('/admin/:agentId/ajan-code', (req, res) => res.status(410).json({ error: 'use_device' }));
+/* OPTION C: every phone waiting for Jennifer, across all Ajans (top of ajan-admin.html) */
+router.get('/admin/ajan-devices', async (req, res) => {
   try {
+    const list = await CertifiedAgent.find({ 'ajanDevices.state': 'pending' }).select('agentId name phone status ajanDevices expiresAt');
+    const out = [];
+    list.forEach((a) => a.ajanDevices.filter((d) => d.state === 'pending').forEach((d) =>
+      out.push(Object.assign(devView(d), { agentId: a.agentId, name: a.name, phone: a.phone, badgeActive: a.status === 'active' && a.publicState() === 'active' }))));
+    out.sort((x, y) => new Date(x.requestedAt) - new Date(y.requestedAt));
+    res.json({ requests: out });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+router.post('/admin/:agentId/device/:devId/:act', async (req, res) => {
+  try {
+    const act = req.params.act, by = String((req.body && req.body.by) || 'console').slice(0, 40);
+    if (!['approve', 'refuse', 'revoke'].includes(act)) return res.status(404).json({ error: 'not_found' });
     const a = await CertifiedAgent.findOne({ agentId: normId(req.params.agentId) });
-    if (!a) return res.status(404).json({ error: 'not_found' });
-    if (a.status !== 'active' || a.publicState() !== 'active') return res.status(422).json({ error: 'not_active' });
-    if (last8(a.phone).length < 8) return res.status(422).json({ error: 'no_phone' });
-    const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
-    a.ajanCodeHash = scryptHash(code + '|' + a.agentId); a.ajanCodeExpires = new Date(Date.now() + 72 * 3600000);
-    a.ajanFails = 0; a.ajanLockedUntil = null;
-    a.history.push({ action: 'ajan_code', note: 'activation code by ' + String((req.body && req.body.by) || 'console').slice(0, 40) });
-    if (a.history.length > 50) a.history = a.history.slice(-50);
+    const d = a && a.ajanDevices.find((x) => x.id === String(req.params.devId));
+    if (!d) return res.status(404).json({ error: 'not_found' });
+    if (act === 'approve') {
+      if (d.state !== 'pending') return res.status(409).json({ error: 'not_pending', state: d.state });
+      if (a.status !== 'active' || a.publicState() !== 'active') return res.status(422).json({ error: 'not_active' });
+      d.state = 'approved';
+    } else if (act === 'refuse') {
+      if (d.state !== 'pending') return res.status(409).json({ error: 'not_pending', state: d.state });
+      d.state = 'refused';
+    } else {
+      if (d.state !== 'approved') return res.status(409).json({ error: 'not_approved', state: d.state });
+      d.state = 'revoked';
+    }
+    d.decidedAt = new Date(); d.decidedBy = by;
+    hist(a, 'ajan_device_' + act, 'phone ' + d.id + ' (' + (d.label || '?') + ') ' + act + ' by ' + by);
     await a.save();
-    res.json({ code, expiresAt: a.ajanCodeExpires, phone: a.phone });
+    res.json({ ok: true, device: devView(d) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 router.post('/admin/:agentId/ajan-revoke', async (req, res) => {
@@ -489,6 +568,7 @@ router.post('/admin/:agentId/ajan-revoke', async (req, res) => {
     const a = await CertifiedAgent.findOne({ agentId: normId(req.params.agentId) });
     if (!a) return res.status(404).json({ error: 'not_found' });
     a.ajanPinHash = ''; a.ajanPinSetAt = null; a.ajanCodeHash = ''; a.ajanCodeExpires = null; a.ajanTokenV = (a.ajanTokenV || 0) + 1;
+    (a.ajanDevices || []).forEach((d) => { if (d.state === 'approved' || d.state === 'pending') { d.state = 'revoked'; d.decidedAt = new Date(); d.decidedBy = String((req.body && req.body.by) || 'console').slice(0, 40); } });
     a.history.push({ action: 'ajan_revoke', note: 'PIN removed by ' + String((req.body && req.body.by) || 'console').slice(0, 40) });
     if (a.history.length > 50) a.history = a.history.slice(-50);
     await a.save();
