@@ -17,9 +17,11 @@
  * person at HaitiBiznis looked at it.
  * ═══════════════════════════════════════════════════════════════════════════ */
 const express = require('express');
-/* 3 Nov (OAVCT ASSISTANCE): registered without an OAVCT, and the OAVCT photo or a valid date is still missing */
+/* 3 Nov (OAVCT ASSISTANCE): a pending driver whose OAVCT is not in order - no document, no date, or EXPIRED.
+   Jeffery 3 Nov evening: "Automatically include drivers with expired OAVCT ... even if the Ajan didn't select
+   the assistance option" - so the box ticked at registration (oavct_assist) is a record, not the condition. */
 function assistOpen(d) {
-  if (!d || !d.oavct_assist || d.status !== 'pending') return false;
+  if (!d || d.status !== 'pending') return false;
   const exp = d.oavct_expiry ? new Date(d.oavct_expiry).toISOString().slice(0, 10) : '';
   return !(d.doc_types || []).includes('oavct') || !exp || exp < new Date().toISOString().slice(0, 10);
 }
