@@ -17,6 +17,12 @@
  * person at HaitiBiznis looked at it.
  * ═══════════════════════════════════════════════════════════════════════════ */
 const express = require('express');
+/* 3 Nov (OAVCT ASSISTANCE): registered without an OAVCT, and the OAVCT photo or a valid date is still missing */
+function assistOpen(d) {
+  if (!d || !d.oavct_assist || d.status !== 'pending') return false;
+  const exp = d.oavct_expiry ? new Date(d.oavct_expiry).toISOString().slice(0, 10) : '';
+  return !(d.doc_types || []).includes('oavct') || !exp || exp < new Date().toISOString().slice(0, 10);
+}
 /* Jeffery 3 Nov: the national ID card is OPTIONAL (the licence carries the NIF) - 4 required photos */
 const AJ_NEED = ['selfie', 'license', 'oavct', 'vehicle'];
 const router = express.Router();
@@ -195,7 +201,9 @@ router.get('/my-driver-stats', async (req, res) => {
                  at: d.created_at, photos: d.doc_count, reason: d.status === 'rejected' ? (d.rejection_reason || '') : '', fix: d.fix_docs || [],
                  /* 1 Nov 2026, Jeffery: "when a doc is missing or not updated or expired it should show it to them" */
                  missing: AJ_NEED.filter((t) => !(d.doc_types || []).includes(t)),
-                 oavct: !d.oavct_expiry ? 'missing' : (new Date(d.oavct_expiry).toISOString().slice(0, 10) < new Date().toISOString().slice(0, 10) ? 'expired' : 'ok') })) });
+                 oavct: !d.oavct_expiry ? 'missing' : (new Date(d.oavct_expiry).toISOString().slice(0, 10) < new Date().toISOString().slice(0, 10) ? 'expired' : 'ok'),
+                 /* 3 Nov: "🟠 ENSKRI — OAVCT POKO REGLE" while the assistance is still open */
+                 oavctAssist: assistOpen(d) })) });
   } catch (e) {
     res.status(500).json({ error: 'server' });
   }
@@ -354,7 +362,7 @@ router.get('/ajan/drivers', ajanAuth, async (req, res) => {
     return { id: d.id, name: d.full_name, phone: d.phone, status: d.status, service: d.preferred_service, vehicle: d.vehicle_type,
       at: d.created_at, docs: d.doc_types || [], missing: AJ_NEED.filter((t) => !(d.doc_types || []).includes(t)),
       fix: d.fix_docs || [], fixNote: (d.fix_docs || []).length ? (d.fix_note || '') : '', oavct: !exp ? 'missing' : (exp < today ? 'expired' : 'ok'), oavctExpiry: exp,
-      reason: d.status === 'rejected' ? (d.rejection_reason || '') : '' };
+      reason: d.status === 'rejected' ? (d.rejection_reason || '') : '', oavctAssist: assistOpen(d) };
   }) });
 });
 router.post('/ajan/drivers/:id/document', ajanAuth, async (req, res) => {
@@ -1114,6 +1122,51 @@ router.get('/admin/drivers/stats', async (req, res) => {
              bonusHtg: Math.floor(x.verified / 5) * 1000, toNext: 5 - (x.verified % 5) };
   });
   res.json({ agents: rows, uncredited: r.data.uncredited || 0 });
+});
+/* 3 Nov 2026 (Jeffery): CSV of the drivers Jennifer filtered (console code required: router.use('/admin',
+   requirePin)). The list is read from MsouWout HERE, never taken from the browser; every export is logged. */
+const DriverExportLog = require('../models/DriverExportLog');
+const DOC_HT = { selfie: 'Foto figi', id: 'Kat ID', license: 'Lisans', oavct: 'OAVCT', vehicle: 'Foto moto/machin' };
+function csvCell(v) {
+  let t = String(v == null ? '' : v).replace(/\r?\n/g, ' ');
+  if (/^[=+\-@\t]/.test(t)) t = "'" + t;                      /* a cell is never a spreadsheet formula */
+  return /[",;]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+}
+router.post('/admin/drivers/export', async (req, res) => {
+  try {
+    const b = req.body || {}, by = String(b.by || '').trim().slice(0, 60);
+    if (!by) return res.status(400).json({ error: 'name_required' });
+    const ids = [...new Set((Array.isArray(b.ids) ? b.ids : []).map(String))].filter((x) => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 1000);
+    if (!ids.length) return res.status(400).json({ error: 'nothing_to_export' });
+    const r = await msw('GET', '/internal/console/list?status=all');
+    if (r.status !== 200) return res.status(503).json({ error: 'link_unavailable' });
+    const all = r.data.drivers || [], want = new Set(ids);
+    const rows = all.filter((d) => want.has(String(d.id)));
+    const codes = [...new Set(rows.map((d) => d.referral_code).filter(Boolean))];
+    const agents = codes.length ? await CertifiedAgent.find({ referralCode: { $in: codes } }).select('name agentId referralCode') : [];
+    const byCode = {}; agents.forEach((a) => { byCode[String(a.referralCode).toUpperCase()] = a; });
+    const today = new Date().toISOString().slice(0, 10);
+    const head = ['Non', 'Telefòn', 'Machin', 'Ajan', 'Badj Ajan', 'Kòd Ajan', 'Estati', 'Dokiman ki manke / pou refè', 'OAVCT', 'Dat enskripsyon'];
+    const lines = rows.map((d) => {
+      const h = d.doc_types || [], fx = d.fix_docs || [], a = d.referral_attached ? byCode[String(d.referral_code || '').toUpperCase()] : null;
+      const exp = d.oavct_expiry ? new Date(d.oavct_expiry).toISOString().slice(0, 10) : '';
+      const miss = AJ_NEED.filter((t) => !h.includes(t)).map((t) => 'Manke ' + DOC_HT[t]).concat(fx.map((t) => 'Refè ' + (DOC_HT[t] || t)));
+      const st = d.status === 'pending' ? (assistOpen(d) ? 'ENSKRI — OAVCT POKO REGLE' : (fx.length ? 'Pou korije' : 'An atant')) : d.status === 'approved' ? 'Apwouve' : d.status === 'rejected' ? 'Rejte' : d.status;
+      return [d.full_name, d.phone, /moto/.test(d.vehicle_type || '') ? 'Moto' : 'Machin', a ? a.name : '', a ? a.agentId : '', d.referral_attached ? d.referral_code : '',
+        st, miss.join(' · '), !exp ? 'pa gen dat' : exp < today ? 'ekspire ' + exp : 'valab jiska ' + exp,
+        d.created_at ? new Date(d.created_at).toISOString().slice(0, 10) : ''].map(csvCell).join(',');
+    });
+    await DriverExportLog.create({ by, filter: String(b.filter || '').slice(0, 200), count: rows.length, driverIds: rows.map((d) => String(d.id)), ip: clientIp(req) });
+    console.log('[EXPORT] ' + rows.length + ' drivers exported by ' + by + ' (' + String(b.filter || '').slice(0, 80) + ')');
+    res.set('Content-Type', 'text/csv; charset=utf-8');
+    res.set('Content-Disposition', 'attachment; filename="chofe-msouwout-' + today + '.csv"');
+    res.set('Cache-Control', 'no-store');
+    res.send('\ufeff' + head.map(csvCell).join(',') + '\r\n' + lines.join('\r\n') + '\r\n');
+  } catch (e) { res.status(500).json({ error: 'server' }); }
+});
+router.get('/admin/drivers/exports', async (req, res) => {
+  const L = await DriverExportLog.find({}).sort({ at: -1 }).limit(30).select('by filter count at').lean();
+  res.json({ exports: L });
 });
 router.get('/admin/drivers/:id/events', async (req, res) => {
   if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'not_found' });
