@@ -888,6 +888,11 @@ router.get('/admin/drivers/stats', async (req, res) => {
   });
   res.json({ agents: rows, uncredited: r.data.uncredited || 0 });
 });
+router.get('/admin/drivers/:id/events', async (req, res) => {
+  if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'not_found' });
+  const r = await msw('GET', '/internal/console/' + req.params.id + '/events');
+  res.status(r.status).json(r.data);
+});
 router.get('/admin/drivers/:id', async (req, res) => {
   if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'not_found' });
   const r = await msw('GET', '/internal/console/' + req.params.id);
@@ -895,7 +900,7 @@ router.get('/admin/drivers/:id', async (req, res) => {
 });
 router.post('/admin/drivers/:id/:act', async (req, res) => {
   const act = req.params.act;
-  if (!UUID_RE.test(req.params.id) || !['approve', 'reject', 'agent', 'fix', 'oavct', 'document', 'welcome'].includes(act)) return res.status(404).json({ error: 'not_found' });
+  if (!UUID_RE.test(req.params.id) || !['approve', 'reject', 'agent', 'fix', 'oavct', 'document', 'welcome', 'edit', 'reopen'].includes(act)) return res.status(404).json({ error: 'not_found' });
   const b = req.body || {};
   let code = String(b.code || '').trim();
   /* An Ajan can be named by his badge number: it becomes his referral code. */
@@ -910,7 +915,7 @@ router.post('/admin/drivers/:id/:act', async (req, res) => {
     return res.status(w.status).json(w.data);
   }
   const r = await msw('POST', '/internal/console/' + req.params.id + '/' + act, { by: b.by, reason: b.reason, code, service: b.service,
-    docs: b.docs, note: b.note, expiry: b.expiry, doc_type: b.doc_type, image_data: b.image_data });
+    docs: b.docs, note: b.note, expiry: b.expiry, doc_type: b.doc_type, image_data: b.image_data, fields: b.fields });
   /* 2 Nov 2026, Jeffery: after Jennifer's approval is saved, the welcome goes out by
      itself - ONCE, only on a NEW approval (not a change of services). WhatsApp is
      the only channel there is; until the Business number is connected the result
