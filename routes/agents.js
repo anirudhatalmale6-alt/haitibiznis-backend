@@ -382,7 +382,49 @@ router.post('/ajan/drivers/:id/document', ajanAuth, async (req, res) => {
   res.status(r.status).json(r.data);
 });
 
+/* ═══ MYPLOPPLOP MERCHANT VERIFICATION (4 Nov 2026) - Jennifer's console → MyPlopPlop internal routes ═══ */
+async function mppInt(method, path, body) {
+  const key = process.env.INTERNAL_SERVICE_KEY;
+  if (!key) return { status: 503, data: { error: 'link_unavailable' } };
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 90000);
+  try {
+    const o = { method, headers: { 'x-internal-key': key }, signal: ctl.signal };
+    if (body !== undefined) { o.headers['Content-Type'] = 'application/json'; o.body = JSON.stringify(body); }
+    const r = await fetch(KOUTYE_API + '/api/internal/merchants' + path, o);
+    if (r.status === 401 || r.status === 503) return { status: 503, data: { error: 'link_unavailable' } };
+    let data; try { data = await r.json(); } catch (e) { return { status: 502, data: { error: 'link_unavailable' } }; }
+    return { status: r.status, data };
+  } catch (e) { return { status: 503, data: { error: 'link_unavailable' } }; } finally { clearTimeout(t); }
+}
+const OID = /^[0-9a-fA-F]{24}$/;
+/* the Ajan's approved phone sends / redoes a business photo - only for a business credited to HIS code */
+router.post('/ajan/merchants/:id/document', ajanAuth, async (req, res) => {
+  if (!OID.test(req.params.id)) return res.status(404).json({ error: 'not_found' });
+  const b = req.body || {};
+  const r = await mppInt('POST', '/' + req.params.id + '/ajan-document', { agentCode: req.ajan.referralCode || '', agentId: req.ajan.agentId, type: b.type, image_data: b.image_data });
+  res.status(r.status).json(r.data);
+});
+
+/* 4 Nov 2026 (Jeffery: "Proceed with activating JC-JENN7 as Jennifer's official Ajan code"): the same action,
+   server to server with the shared INTERNAL_SERVICE_KEY (a GitHub workflow), for when it is done FOR her. */
+router.post('/internal/adopt-code', async (req, res) => {
+  const k = String(req.headers['x-internal-key'] || ''), want = String(process.env.INTERNAL_SERVICE_KEY || '');
+  if (!want || k.length !== want.length || !crypto.timingSafeEqual(Buffer.from(k), Buffer.from(want))) return res.status(401).json({ error: 'unauthorized' });
+  try { const b = req.body || {}; const r = await adoptCode(b.agentId, b.code, b.by); res.status(r.status).json(r.data); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.use('/admin', requirePin);
+router.get('/admin/merchants', async (req, res) => { const r = await mppInt('GET', '/'); res.status(r.status).json(r.data); });
+router.get('/admin/merchants/:id', async (req, res) => {
+  if (!OID.test(req.params.id)) return res.status(404).json({ error: 'not_found' });
+  const r = await mppInt('GET', '/' + req.params.id); res.status(r.status).json(r.data);
+});
+router.post('/admin/merchants/:id/:act', async (req, res) => {
+  if (!OID.test(req.params.id) || !['approve', 'reject', 'fix', 'fix-done', 'reopen', 'document', 'welcome', 'review', 'edit'].includes(req.params.act)) return res.status(404).json({ error: 'not_found' });
+  const r = await mppInt('POST', '/' + req.params.id + '/' + req.params.act, req.body || {});
+  res.status(r.status).json(r.data);
+});
 
 function adminView(a) {
   return {
@@ -576,26 +618,28 @@ router.post('/admin/:agentId/device/:devId/:act', async (req, res) => {
 /* 4 Nov 2026 (Jennifer: "M bezwen gen menm code JC-JENN7 lan"): the badge takes the code of the Ajan's OWN
    koutye.html sign-up instead of the one the console made - same Ajan account. Refused if any driver is
    credited to the old code here; MyPlopPlop refuses if it earned anything there or the sign-up is not hers. */
+async function adoptCode(agentId, code, by) {
+  const a = await CertifiedAgent.findOne({ agentId: normId(agentId) });
+  if (!a) return { status: 404, data: { error: 'not_found' } };
+  const to = String(code || '').trim().toUpperCase(), from = String(a.referralCode || '').toUpperCase();
+  by = String(by || 'console').slice(0, 40);
+  if (!to || !from || to === from) return { status: 400, data: { error: 'bad_request' } };
+  if (await CertifiedAgent.exists({ referralCode: new RegExp('^' + to.replace(/[^A-Z0-9-]/g, '') + '$', 'i'), _id: { $ne: a._id } })) return { status: 409, data: { error: 'code_on_other_badge' } };
+  const r = await msw('GET', '/internal/console/list?status=all');
+  if (r.status !== 200) return { status: 503, data: { error: 'link_unavailable' } };
+  const used = (r.data.drivers || []).filter((d) => String(d.referral_code || '').toUpperCase() === from).length;
+  if (used) return { status: 409, data: { error: 'old_code_has_drivers', drivers: used } };
+  const e = await engine('POST', '/ajan-code/rename', { phone: a.phone, from, to, by });
+  if (e.status !== 200 || !e.data || !e.data.success) return { status: e.status === 503 ? 503 : 409, data: Object.assign({ error: 'engine_refused' }, e.data || {}) };
+  a.referralCode = to;
+  a.history.push({ action: 'code_adopted', note: (from + ' -> ' + to + ' (own sign-up; old code retired) by ' + by).slice(0, 120) });
+  if (a.history.length > 50) a.history = a.history.slice(-50);
+  await a.save();
+  return { status: 200, data: { ok: true, agent: adminView(a) } };
+}
 router.post('/admin/:agentId/adopt-code', async (req, res) => {
-  try {
-    const a = await CertifiedAgent.findOne({ agentId: normId(req.params.agentId) });
-    if (!a) return res.status(404).json({ error: 'not_found' });
-    const to = String((req.body && req.body.code) || '').trim().toUpperCase(), from = String(a.referralCode || '').toUpperCase();
-    const by = String((req.body && req.body.by) || 'console').slice(0, 40);
-    if (!to || !from || to === from) return res.status(400).json({ error: 'bad_request' });
-    if (await CertifiedAgent.exists({ referralCode: new RegExp('^' + to.replace(/[^A-Z0-9-]/g, '') + '$', 'i'), _id: { $ne: a._id } })) return res.status(409).json({ error: 'code_on_other_badge' });
-    const r = await msw('GET', '/internal/console/list?status=all');
-    if (r.status !== 200) return res.status(503).json({ error: 'link_unavailable' });
-    const used = (r.data.drivers || []).filter((d) => String(d.referral_code || '').toUpperCase() === from).length;
-    if (used) return res.status(409).json({ error: 'old_code_has_drivers', drivers: used });
-    const e = await engine('POST', '/ajan-code/rename', { phone: a.phone, from, to, by });
-    if (e.status !== 200 || !e.data || !e.data.success) return res.status(e.status === 503 ? 503 : 409).json(Object.assign({ error: 'engine_refused' }, e.data || {}));
-    a.referralCode = to;
-    a.history.push({ action: 'code_adopted', note: (from + ' -> ' + to + ' (own sign-up) by ' + by).slice(0, 120) });
-    if (a.history.length > 50) a.history = a.history.slice(-50);
-    await a.save();
-    res.json({ ok: true, agent: adminView(a) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  try { const r = await adoptCode(req.params.agentId, req.body && req.body.code, req.body && req.body.by); res.status(r.status).json(r.data); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 router.post('/admin/:agentId/ajan-revoke', async (req, res) => {
   try {
