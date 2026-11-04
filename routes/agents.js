@@ -803,7 +803,7 @@ router.post('/admin/:agentId/new-pin', async (req, res) => {
   const a = await CertifiedAgent.findOne({ agentId: String(req.params.agentId || '').toUpperCase() });
   if (!a) return res.status(404).json({ error: 'not_found' });
   if (a.status !== 'active' || !a.referralCode) return res.status(409).json({ error: 'not_active' });
-  const r = await engine('POST', '/ajan-code/new-pin', { phone: a.phone, code: a.referralCode, by: String((req.body && req.body.by) || 'console').slice(0, 60) });
+  const r = await engine('POST', '/ajan-code/new-pin', { phone: a.phone, code: a.referralCode, name: a.name, by: String((req.body && req.body.by) || 'console').slice(0, 60) });
   res.status(r.status).json(r.data);
 });
 router.post('/admin/pilot/performance', async (req, res) => {
