@@ -797,6 +797,15 @@ router.post('/admin/code', async (req, res) => {
   const r = await engine('POST', '/ajan-code', { name: b.name, phone: b.phone, customCode: b.customCode });
   res.status(r.status).json(r.data);
 });
+/* 4 Nov 2026 (Jennifer): a PIN cannot be read back (stored hashed), so an active badge gets a NEW one,
+   shown once. The engine only does it for the account behind THIS badge's code AND phone. */
+router.post('/admin/:agentId/new-pin', async (req, res) => {
+  const a = await CertifiedAgent.findOne({ agentId: String(req.params.agentId || '').toUpperCase() });
+  if (!a) return res.status(404).json({ error: 'not_found' });
+  if (a.status !== 'active' || !a.referralCode) return res.status(409).json({ error: 'not_active' });
+  const r = await engine('POST', '/ajan-code/new-pin', { phone: a.phone, code: a.referralCode, by: String((req.body && req.body.by) || 'console').slice(0, 60) });
+  res.status(r.status).json(r.data);
+});
 router.post('/admin/pilot/performance', async (req, res) => {
   const r = await engine('POST', '/ajan-performance', { agents: (req.body && req.body.agents) || [] });
   res.status(r.status).json(r.data);
