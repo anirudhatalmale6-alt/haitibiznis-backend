@@ -573,6 +573,30 @@ router.post('/admin/:agentId/device/:devId/:act', async (req, res) => {
     res.json({ ok: true, device: devView(d) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+/* 4 Nov 2026 (Jennifer: "M bezwen gen menm code JC-JENN7 lan"): the badge takes the code of the Ajan's OWN
+   koutye.html sign-up instead of the one the console made - same Ajan account. Refused if any driver is
+   credited to the old code here; MyPlopPlop refuses if it earned anything there or the sign-up is not hers. */
+router.post('/admin/:agentId/adopt-code', async (req, res) => {
+  try {
+    const a = await CertifiedAgent.findOne({ agentId: normId(req.params.agentId) });
+    if (!a) return res.status(404).json({ error: 'not_found' });
+    const to = String((req.body && req.body.code) || '').trim().toUpperCase(), from = String(a.referralCode || '').toUpperCase();
+    const by = String((req.body && req.body.by) || 'console').slice(0, 40);
+    if (!to || !from || to === from) return res.status(400).json({ error: 'bad_request' });
+    if (await CertifiedAgent.exists({ referralCode: new RegExp('^' + to.replace(/[^A-Z0-9-]/g, '') + '$', 'i'), _id: { $ne: a._id } })) return res.status(409).json({ error: 'code_on_other_badge' });
+    const r = await msw('GET', '/internal/console/list?status=all');
+    if (r.status !== 200) return res.status(503).json({ error: 'link_unavailable' });
+    const used = (r.data.drivers || []).filter((d) => String(d.referral_code || '').toUpperCase() === from).length;
+    if (used) return res.status(409).json({ error: 'old_code_has_drivers', drivers: used });
+    const e = await engine('POST', '/ajan-code/rename', { phone: a.phone, from, to, by });
+    if (e.status !== 200 || !e.data || !e.data.success) return res.status(e.status === 503 ? 503 : 409).json(Object.assign({ error: 'engine_refused' }, e.data || {}));
+    a.referralCode = to;
+    a.history.push({ action: 'code_adopted', note: (from + ' -> ' + to + ' (own sign-up) by ' + by).slice(0, 120) });
+    if (a.history.length > 50) a.history = a.history.slice(-50);
+    await a.save();
+    res.json({ ok: true, agent: adminView(a) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 router.post('/admin/:agentId/ajan-revoke', async (req, res) => {
   try {
     const a = await CertifiedAgent.findOne({ agentId: normId(req.params.agentId) });
