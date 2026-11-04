@@ -421,7 +421,7 @@ router.get('/admin/merchants/:id', async (req, res) => {
   const r = await mppInt('GET', '/' + req.params.id); res.status(r.status).json(r.data);
 });
 router.post('/admin/merchants/:id/:act', async (req, res) => {
-  if (!OID.test(req.params.id) || !['approve', 'reject', 'fix', 'fix-done', 'reopen', 'document', 'welcome', 'review', 'edit'].includes(req.params.act)) return res.status(404).json({ error: 'not_found' });
+  if (!OID.test(req.params.id) || !['approve', 'reject', 'fix', 'fix-done', 'reopen', 'document', 'welcome', 'review', 'edit', 'patente', 'assist'].includes(req.params.act)) return res.status(404).json({ error: 'not_found' });
   const r = await mppInt('POST', '/' + req.params.id + '/' + req.params.act, req.body || {});
   res.status(r.status).json(r.data);
 });
