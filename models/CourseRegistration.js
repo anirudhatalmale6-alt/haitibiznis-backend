@@ -29,6 +29,11 @@ const registrationSchema = new mongoose.Schema({
      student. Recorded only - nothing is paid or credited from these. */
   source: { type: String, default: '', trim: true, maxlength: 60 },
   refCode: { type: String, default: '', trim: true, maxlength: 40 },
+  /* 5 Nov 2026: the LajanMaker Ajan's 30% on a paid training, as the engine answered (once per registration) */
+  commissionResult: String,
+  commissionAmount: Number,
+  commissionAgent: String,
+  commissionCheckedAt: Date,
   phone: { type: String, default: '' },
   /* Last eight digits - how a student finds their own courses again. */
   phoneKey: { type: String, index: true },

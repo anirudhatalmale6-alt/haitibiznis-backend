@@ -73,6 +73,28 @@ function seatsLeft(course) {
  * database admits exactly one of them and the other two get null. Everything
  * that must happen once - the seat, the notification - hangs off the winner.
  * ═══════════════════════════════════════════════════════════════════════════ */
+const KOUTYE_API = process.env.KOUTYE_API_URL || 'https://myplopplop-api.onrender.com';
+async function creditTrainingAjan(reg) {
+  const key = process.env.INTERNAL_SERVICE_KEY;
+  if (!key) { console.warn('[KOU] no INTERNAL_SERVICE_KEY - Ajan commission skipped for ' + reg.referenceId); return; }
+  const rate = Number(process.env.TL_USD_HTG_RATE) || 131;
+  const amount = reg.currency === 'USD' ? Math.round(Number(reg.amount) * rate) : Math.round(Number(reg.amount) || 0);
+  if (amount <= 0) return;
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 10000);
+  let out = null;
+  try {
+    const r = await fetch(KOUTYE_API + '/api/referrals/course-sale', { method: 'POST', signal: ctl.signal,
+      headers: { 'Content-Type': 'application/json', 'x-internal-key': key },
+      body: JSON.stringify({ koutyeCode: reg.refCode, phone: reg.phone, name: reg.studentName, email: reg.email, amount,
+        transactionId: reg.referenceId, description: 'LajanMaker — ' + (reg.courseTitle || 'fòmasyon') }) });
+    out = await r.json().catch(() => null);
+  } finally { clearTimeout(t); }
+  const res = (out && out.result) || {};
+  await CourseRegistration.updateOne({ _id: reg._id }, { $set: { commissionResult: res.reason || (res.commissioned ? 'commissioned' : 'unknown'),
+    commissionAmount: res.amount || 0, commissionAgent: res.koutyeCode || null, commissionCheckedAt: new Date() } }).catch(() => {});
+  console.log('[KOU] Ajan ' + (res.koutyeCode || reg.refCode) + ' on ' + reg.referenceId + ': ' + (res.commissioned ? res.amount + ' HTG (30%)' : (res.reason || 'no commission')));
+}
+
 async function markRegPaid(reg) {
   const claimed = await CourseRegistration.findOneAndUpdate(
     { _id: reg._id, status: 'pending' },
@@ -107,6 +129,12 @@ async function markRegPaid(reg) {
      Not awaited: a slow mail server must not hold up their confirmation
      screen. */
   deliverRegistration(claimed).catch(() => {});
+
+  /* 5 Nov 2026, Jeffery: "Please make sure the referral percentage for training is 30% for LajanMaker Agents".
+     The Ajan code that came with the registration is credited 30% of what the student paid, by the referral
+     engine (MyPlopPlop, platform 'lajanmaker'), keyed on this registration's reference so it can never pay twice.
+     Not awaited; the answer is written on the registration either way. */
+  if (claimed.refCode) creditTrainingAjan(claimed).catch((e) => console.warn('[KOU] Ajan credit failed for ' + claimed.referenceId + ': ' + e.message));
 
   /* He has to invite this person's Google account by hand in version 1, so
      being told a student has paid is not a nicety - it is the next step in the
