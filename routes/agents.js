@@ -367,6 +367,17 @@ router.get('/ajan/drivers', ajanAuth, async (req, res) => {
       reason: d.status === 'rejected' ? (d.rejection_reason || '') : '', oavctAssist: assistOpen(d) };
   }) });
 });
+/* 5 Nov 2026: the Ajan's approved phone claims a driver IT registered that reached MsouWout without an Ajan code
+   (proof = that registration's own key, client_ref, kept on the phone). Only if nobody is credited yet. */
+router.post('/ajan/drivers/:id/claim', ajanAuth, async (req, res) => {
+  const id = String(req.params.id || '');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(404).json({ error: 'not_found' });
+  const code = String(req.ajan.referralCode || '').toUpperCase();
+  if (!code) return res.status(409).json({ error: 'no_ajan_code' });
+  const r = await msw('POST', '/internal/console/' + id + '/claim', { by: 'ajan:' + req.ajan.agentId, code, client_ref: String((req.body || {}).client_ref || '') });
+  if (r.status === 200 && String(r.data.code || '').toUpperCase() !== code) return res.status(409).json({ error: 'other_ajan', code: r.data.code });
+  res.status(r.status).json(r.data);
+});
 router.post('/ajan/drivers/:id/document', ajanAuth, async (req, res) => {
   const id = String(req.params.id || '');
   if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(404).json({ error: 'not_found' });
