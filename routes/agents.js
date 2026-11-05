@@ -356,14 +356,14 @@ router.get('/ajan/drivers', ajanAuth, async (req, res) => {
   if (!code) return res.json({ drivers: [] });
   const r = await msw('GET', '/internal/console/list?status=all');
   if (r.status !== 200) return res.status(503).json({ error: 'link_unavailable' });
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10), in30 = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
   const mine = (r.data.drivers || []).filter((d) => d.referral_attached && String(d.referral_code || '').toUpperCase() === code);
   res.set('Cache-Control', 'no-store');
   res.json({ drivers: mine.map((d) => {
     const exp = d.oavct_expiry ? new Date(d.oavct_expiry).toISOString().slice(0, 10) : '';
     return { id: d.id, name: d.full_name, phone: d.phone, status: d.status, service: d.preferred_service, vehicle: d.vehicle_type,
       at: d.created_at, docs: d.doc_types || [], missing: AJ_NEED.filter((t) => !(d.doc_types || []).includes(t)),
-      fix: d.fix_docs || [], fixNote: (d.fix_docs || []).length ? (d.fix_note || '') : '', oavct: !exp ? 'missing' : (exp < today ? 'expired' : 'ok'), oavctExpiry: exp,
+      fix: d.fix_docs || [], fixNote: (d.fix_docs || []).length ? (d.fix_note || '') : '', oavct: !exp ? 'missing' : (exp < today ? 'expired' : (exp <= in30 ? 'soon' : 'ok')), oavctExpiry: exp,
       reason: d.status === 'rejected' ? (d.rejection_reason || '') : '', oavctAssist: assistOpen(d) };
   }) });
 });
@@ -377,7 +377,11 @@ router.post('/ajan/drivers/:id/document', ajanAuth, async (req, res) => {
   const drv = d.data.driver;
   /* only HIS driver - the one his code is credited with - and only while pending */
   if (!drv.referral_attached || String(drv.referral_code || '').toUpperCase() !== String(req.ajan.referralCode || '').toUpperCase()) return res.status(403).json({ error: 'not_your_driver' });
-  if (drv.status !== 'pending') return res.status(409).json({ error: 'not_pending' });
+  /* 5 Nov 2026 (OAVCT expiry): his APPROVED driver's renewed OAVCT may be sent too, when it is expired or due within
+     30 days. A photo does not unblock anyone - Jennifer checks it and enters the new date (console, logged). */
+  const exp = drv.oavct_expiry ? new Date(drv.oavct_expiry).toISOString().slice(0, 10) : '';
+  const renewal = drv.status === 'approved' && t === 'oavct' && exp && exp <= new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+  if (drv.status !== 'pending' && !renewal) return res.status(409).json({ error: 'not_pending' });
   const r = await msw('POST', '/internal/console/' + id + '/document', { by: 'ajan:' + req.ajan.agentId, doc_type: t, image_data: b.image_data });
   res.status(r.status).json(r.data);
 });
@@ -1192,6 +1196,11 @@ router.get('/admin/drivers', async (req, res) => {
   }
   res.status(r.status).json(r.data);
 });
+/* 5 Nov 2026: OAVCT watch for Jennifer - approved drivers held (expired) / expiring within 30 days / no date */
+router.get('/admin/drivers/oavct', async (req, res) => {
+  const r = await msw('GET', '/internal/console/oavct');
+  res.status(r.status).json(r.data);
+});
 router.get('/admin/drivers/stats', async (req, res) => {
   const r = await msw('GET', '/internal/console-stats/agents');
   if (r.status !== 200) return res.status(r.status).json(r.data);
@@ -1286,6 +1295,35 @@ router.post('/admin/drivers/:id/:act', async (req, res) => {
   if (act === 'approve' && r.status === 200 && r.data && r.data.was !== 'approved' && r.data.driver && !r.data.driver.welcome_status) {
     r.data.welcome = await sendDriverWelcome(r.data.driver, b.by);
   }
+  res.status(r.status).json(r.data);
+});
+
+/* ═══ KOLI REFUNDS (5 Nov 2026) - Jennifer's console → MyPlopPlop internal routes ═══
+   Jeffery: "a reliable refund process if no driver accepts". A paid parcel nobody took (30 min), or that
+   the sender cancelled before pickup, is recorded on MyPlopPlop as a refund OWED. Jennifer sees the list
+   here, pays it back by MonCash/NatCash/card, and records who + the transaction reference. */
+async function mppJob(method, path, body) {
+  const key = process.env.INTERNAL_SERVICE_KEY;
+  if (!key) return { status: 503, data: { error: 'link_unavailable' } };
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 90000);
+  try {
+    const o = { method, headers: { 'x-internal-key': key }, signal: ctl.signal };
+    if (body !== undefined) { o.headers['Content-Type'] = 'application/json'; o.body = JSON.stringify(body); }
+    const r = await fetch(KOUTYE_API + '/api/internal' + path, o);
+    if (r.status === 401 || r.status === 503) return { status: 503, data: { error: 'link_unavailable' } };
+    let data; try { data = await r.json(); } catch (e) { return { status: 502, data: { error: 'link_unavailable' } }; }
+    return { status: r.status, data };
+  } catch (e) { return { status: 503, data: { error: 'link_unavailable' } }; } finally { clearTimeout(t); }
+}
+router.get('/admin/parcel-refunds', async (req, res) => {
+  const st = ['owed', 'refunded', 'all'].includes(req.query.status) ? req.query.status : 'owed';
+  const r = await mppJob('GET', '/parcel-refunds?status=' + st);
+  res.status(r.status).json(r.data);
+});
+router.post('/admin/parcel-refunds/:id/refunded', async (req, res) => {
+  if (!OID.test(req.params.id)) return res.status(404).json({ error: 'not_found' });
+  const b = req.body || {};
+  const r = await mppJob('POST', '/parcel-refunds/' + req.params.id + '/refunded', { by: String(b.by || '').slice(0, 80), reference: String(b.reference || '').slice(0, 120), note: String(b.note || '').slice(0, 300) });
   res.status(r.status).json(r.data);
 });
 
