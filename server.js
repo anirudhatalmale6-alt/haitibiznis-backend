@@ -176,6 +176,9 @@ mongoose.connect(MONGO_URI)
         label: 'course',
         firstDelayMs: 75 * 1000
       });
+
+      /* 5 Nov 2026: and over AI flyer orders (Jennifer paid and never got hers). */
+      require('./utils/flyerSweep').startFlyerSweep();
     });
   })
   .catch(err => {
