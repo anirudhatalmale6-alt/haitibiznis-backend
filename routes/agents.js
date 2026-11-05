@@ -1326,6 +1326,33 @@ async function mppJob(method, path, body) {
     return { status: r.status, data };
   } catch (e) { return { status: 503, data: { error: 'link_unavailable' } }; } finally { clearTimeout(t); }
 }
+/* 5 Nov 2026 (Jennifer could not find passenger-ride refunds anywhere): MsouWout ride refunds owed, listed and
+   recorded from her console - the same 💸 tab as the parcel refunds. */
+async function mswRides(method, path, body) {
+  const key = process.env.INTERNAL_SERVICE_KEY;
+  if (!key) return { status: 503, data: { error: 'link_unavailable' } };
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 90000);
+  try {
+    const o = { method, headers: { 'x-internal-key': key }, signal: ctl.signal };
+    if (body !== undefined) { o.headers['Content-Type'] = 'application/json'; o.body = JSON.stringify(body); }
+    const r = await fetch(MSW_API + '/api/rides' + path, o);
+    if (r.status === 401 || r.status === 503) return { status: 503, data: { error: 'link_unavailable' } };
+    let data; try { data = await r.json(); } catch (e) { return { status: 502, data: { error: 'link_unavailable' } }; }
+    return { status: r.status, data };
+  } catch (e) { return { status: 503, data: { error: 'link_unavailable' } }; } finally { clearTimeout(t); }
+}
+router.get('/admin/ride-refunds', async (req, res) => {
+  const st = ['owed', 'refunded', 'all'].includes(req.query.status) ? req.query.status : 'owed';
+  const r = await mswRides('GET', '/internal/refunds?status=' + st);
+  res.status(r.status).json(r.data);
+});
+router.post('/admin/ride-refunds/:id/refunded', async (req, res) => {
+  if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'not_found' });
+  const b = req.body || {};
+  const r = await mswRides('POST', '/internal/refunds/' + req.params.id + '/refunded', { by: String(b.by || '').slice(0, 60),
+    reference: String(b.reference || '').slice(0, 120), note: String(b.note || '').slice(0, 300), amount: b.amount });
+  res.status(r.status).json(r.data);
+});
 router.get('/admin/parcel-refunds', async (req, res) => {
   const st = ['owed', 'refunded', 'all'].includes(req.query.status) ? req.query.status : 'owed';
   const r = await mppJob('GET', '/parcel-refunds?status=' + st);
