@@ -33,7 +33,18 @@ const transactionSchema = new mongoose.Schema({
      number (referenceId) is printed on the ticket in plain text, so it can no
      longer be what lets somebody in. */
   qrToken: { type: String, select: false, index: { unique: true, sparse: true } },
+  /* 4 Nov 2026 (Jeffery: "One unique QR code per attendee"): a purchase of N > 1 tickets gets N passes, each with its
+     own QR, scanned on its own. Made once, at activation. A ticket that already received a single group QR
+     (qrToken) before this keeps it - nobody's ticket changes under them. */
+  passes: {
+    type: [{ _id: false, n: Number, token: String, usedAt: Date, usedBy: String, useCount: { type: Number, default: 0 } }],
+    select: false, default: undefined
+  },
   koutyeCode: { type: String },
+  /* 4 Nov 2026 (Jeffery: "ALL SALES FINAL ... Customers must acknowledge the policy before payment"):
+     when the buyer ticked the final-sale box, and which wording he saw. Required for every paid ticket. */
+  finalSaleAcceptedAt: Date,
+  finalSaleVersion: String,
 
   // Whether the buyer was actually SENT their ticket, and if not, why.
   //
@@ -75,4 +86,5 @@ const transactionSchema = new mongoose.Schema({
   phoneKey: { type: String, index: true }
 }, { timestamps: true });
 
+transactionSchema.index({ 'passes.token': 1 }, { unique: true, sparse: true });
 module.exports = mongoose.model('Transaction', transactionSchema);

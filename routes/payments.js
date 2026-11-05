@@ -287,7 +287,11 @@ async function reconcile(txn) {
 router.post('/buy-ticket', async (req, res) => {
   let release = null;
   try {
-    const { eventId, ticketName, qty, buyerName, buyerPhone, buyerEmail, paymentMethod, koutyeCode } = req.body;
+    const { eventId, ticketName, qty, buyerName, buyerPhone, buyerEmail, paymentMethod } = req.body;
+    /* 4 Nov 2026: the Ajan's code from his own link (?ref=CODE). The share button used to put the literal word
+       "koutye" there, so nothing that is not shaped like a real code is kept. The engine decides if it is real. */
+    const kc = String(req.body.koutyeCode || '').trim().toUpperCase().replace(/\s+/g, '');
+    const koutyeCode = /^[A-Z0-9][A-Z0-9-]{2,31}$/.test(kc) && kc !== 'KOUTYE' ? kc : undefined;
     if (!eventId || !ticketName || !paymentMethod) {
       return res.status(400).json({ error: 'Missing required fields: eventId, ticketName, paymentMethod' });
     }
@@ -349,13 +353,20 @@ router.post('/buy-ticket', async (req, res) => {
       return res.json({ success: true, free: true, referenceId: refId, ticketName, qty: quantity });
     }
 
+    /* Jeffery 4 Nov: "ALL SALES FINAL — NO REFUNDS ... Customers must acknowledge the policy before payment."
+       A paid ticket is not started without the ticked box (free tickets are not a sale). */
+    if (req.body.finalSaleAccepted !== true) {
+      if (release) { await release(); release = null; }
+      return res.status(400).json({ error: 'final_sale_required' });
+    }
     const refId = genRef();
     const txn = new Transaction({
       event: eventId, ticketName, ticketPrice: ticket.price,
       qty: quantity, totalAmount: total, platformFee: fee,
       referenceId: refId, paymentMethod,
       buyerName, buyerPhone, buyerEmail, koutyeCode,
-      phoneKey: phoneKey(buyerPhone)
+      phoneKey: phoneKey(buyerPhone),
+      finalSaleAcceptedAt: new Date(), finalSaleVersion: String(req.body.finalSaleVersion || 'v1').slice(0, 20)
     });
     await txn.save();
     /* The pending checkout now holds its seats - the next buyer can be checked. */
@@ -713,12 +724,25 @@ router.get('/ticket/:referenceId/qr', async (req, res) => {
     if (txn.status !== 'completed') return res.json(Object.assign(base, { active: false, qr: null }));
     if (event && event.status === 'cancelled') return res.json(Object.assign(base, { active: false, qr: null, cancelled: true }));
     if (!activation.isActive(event)) return res.json(Object.assign(base, { active: false, qr: null }));
-    // made once: whoever writes it first wins, everyone else reads the same one
-    await Transaction.updateOne({ _id: txn._id, qrToken: { $exists: false } },
-      { $set: { qrToken: require('crypto').randomBytes(16).toString('hex') } });
-    const withTok = await Transaction.findById(txn._id).select('+qrToken');
-    const qrDataUrl = await QRCode.toDataURL(checkUrl(withTok.qrToken),
-      { width: 300, margin: 2, color: { dark: '#0A0E1A', light: '#FFFFFF' } });
+    const QR_OPT = { width: 300, margin: 2, color: { dark: '#0A0E1A', light: '#FFFFFF' } };
+    const rnd = () => require('crypto').randomBytes(16).toString('hex');
+    let withTok = await Transaction.findById(txn._id).select('+qrToken +passes');
+    /* 4 Nov 2026: one QR per attendee. A group (qty > 1) that never received the old single group QR gets one pass
+       per person - made once: whoever writes it first wins, everyone else reads the same ones. */
+    if ((txn.qty || 1) > 1 && !withTok.qrToken) {
+      const n = Math.min(Number(txn.qty) || 1, 50);
+      await Transaction.updateOne({ _id: txn._id, passes: { $exists: false }, qrToken: { $exists: false } },
+        { $set: { passes: Array.from({ length: n }, (_, i) => ({ n: i + 1, token: rnd(), useCount: 0 })) } });
+      withTok = await Transaction.findById(txn._id).select('+qrToken +passes');
+    }
+    if (withTok.passes && withTok.passes.length) {
+      const passes = await Promise.all(withTok.passes.map(async (p) => ({ n: p.n, used: !!p.usedAt, qr: await QRCode.toDataURL(checkUrl(p.token), QR_OPT) })));
+      return res.json(Object.assign(base, { active: true, qr: passes[0].qr, passes, of: passes.length }));
+    }
+    // a single ticket (or an old group QR): one token, made once
+    await Transaction.updateOne({ _id: txn._id, qrToken: { $exists: false } }, { $set: { qrToken: rnd() } });
+    withTok = await Transaction.findById(txn._id).select('+qrToken');
+    const qrDataUrl = await QRCode.toDataURL(checkUrl(withTok.qrToken), QR_OPT);
     res.json(Object.assign(base, { active: true, qr: qrDataUrl }));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -727,16 +751,18 @@ router.get('/ticket/:referenceId/qr', async (req, res) => {
 
 /* The verdict the door sees, one of four (his words): VALID, ALREADY USED,
    NOT YET ACTIVE, INVALID. `reason` says why for the last two. */
-function verdict(txn, event, now) {
+function verdict(txn, event, now, pass) {
   if (!txn) return { state: 'invalid', reason: 'not_found' };
   if (txn.status !== 'completed') return { state: 'invalid', reason: txn.status || 'not_paid' };
   if (event && event.status === 'cancelled') return { state: 'invalid', reason: 'event_cancelled' };
   if (!activation.isActive(event, now)) return { state: 'not_active', reason: 'not_active', activatesAt: activation.activationAt(event) };
-  if (txn.usedAt) return { state: 'used', reason: 'used' };
+  if (pass ? pass.usedAt : txn.usedAt) return { state: 'used', reason: 'used' };
   return { state: 'valid', reason: 'ok' };
 }
 
-function checkPayload(txn, event) {
+function checkPayload(txn, event, pass) {
+  if (pass) return Object.assign(checkPayload(txn, event), { used: !!pass.usedAt, usedAt: pass.usedAt || null, usedBy: pass.usedBy || '',
+    useCount: pass.useCount || 0, pass: { n: pass.n, of: (txn.passes && txn.passes.length) || txn.qty } });
   return {
     valid: txn.status === 'completed',
     reason: txn.status === 'completed' ? 'ok' : txn.status,
@@ -892,7 +918,12 @@ router.post('/check/:referenceId/use', async (req, res) => {
    hex characters: it cannot be guessed, and an unknown one is INVALID. */
 async function byToken(token) {
   if (!/^[a-f0-9]{32}$/.test(String(token || ''))) return null;
-  return Transaction.findOne({ qrToken: token });
+  const t = await Transaction.findOne({ qrToken: token });
+  if (t) return t;
+  /* one attendee's pass inside a group purchase */
+  const g = await Transaction.findOne({ 'passes.token': token }).select('+passes');
+  if (g) g._pass = (g.passes || []).find((p) => p.token === token) || null;
+  return g;
 }
 function eventOutOf(event) {
   return event ? { title: event.title, date: event.date, startTime: event.startTime, endTime: event.endTime,
@@ -902,10 +933,12 @@ router.get('/qr/:token', async (req, res) => {
   try {
     let txn = await byToken(req.params.token);
     if (!txn) return res.status(404).json({ valid: false, state: 'invalid', reason: 'not_found' });
+    const pass = txn._pass || null;
     txn = (await reconcile(txn)) || txn;
+    if (pass && !txn.passes) txn.passes = [pass];
     const event = await Event.findById(txn.event).select(EVENT_FIELDS).lean();
-    const v = verdict(txn, event);
-    res.json(Object.assign(checkPayload(txn, eventOutOf(event)), v, { valid: v.state === 'valid' }));
+    const v = verdict(txn, event, undefined, pass);
+    res.json(Object.assign(checkPayload(txn, eventOutOf(event), pass), v, { valid: v.state === 'valid' }));
   } catch (err) {
     res.status(500).json({ valid: false, state: 'invalid', reason: 'error', error: err.message });
   }
@@ -914,11 +947,32 @@ router.post('/qr/:token/use', async (req, res) => {
   try {
     let txn = await byToken(req.params.token);
     if (!txn) return res.status(404).json({ valid: false, state: 'invalid', reason: 'not_found' });
+    const pass = txn._pass || null;
     const event = await Event.findById(txn.event).select(EVENT_FIELDS + ' doorCode');
     const who = await doorAuth(req, event);
     if (!who) return res.status(403).json({ valid: false, reason: 'bad_code' });
     txn = (await reconcile(txn)) || txn;
     const eventOut = eventOutOf(event);
+    if (pass) {
+      /* one attendee of a group: this pass, and only this pass, is claimed - two phones, same second, one VALID */
+      const v0 = verdict(txn, event, undefined, null);
+      if (v0.state === 'invalid' || v0.state === 'not_active') return res.json(Object.assign(checkPayload(txn, eventOut, pass), v0, { valid: false }));
+      const label = String((req.body && req.body.door) || '').slice(0, 40) || (who === 'console' ? 'Konsòl' : 'Pòt');
+      const now = new Date();
+      const won = await Transaction.findOneAndUpdate(
+        { _id: txn._id, status: 'completed', passes: { $elemMatch: { token: pass.token, usedAt: null } } },
+        { $set: { 'passes.$.usedAt': now, 'passes.$.usedBy': label }, $inc: { 'passes.$.useCount': 1, useCount: 1 } },
+        { new: true }).select('+passes');
+      if (won) {
+        await Transaction.updateOne({ _id: txn._id, usedAt: null }, { $set: { usedAt: now, usedBy: label } });   // first of the group in
+        const p2 = won.passes.find((p) => p.token === pass.token);
+        return res.json(Object.assign(checkPayload(won, eventOut, p2), { firstUse: true, secondsAgo: 0, state: 'valid', reason: 'ok' }));
+      }
+      const again = await Transaction.findOneAndUpdate({ _id: txn._id, 'passes.token': pass.token }, { $inc: { 'passes.$.useCount': 1, useCount: 1 } }, { new: true }).select('+passes');
+      const p3 = ((again || txn).passes || []).find((p) => p.token === pass.token) || pass;
+      const secondsAgo = p3.usedAt ? Math.max(0, Math.round((Date.now() - new Date(p3.usedAt).getTime()) / 1000)) : null;
+      return res.json(Object.assign(checkPayload(again || txn, eventOut, p3), { firstUse: false, secondsAgo, state: 'used', reason: 'used', valid: false }));
+    }
     const v = verdict(txn, event);
     if (v.state === 'invalid' || v.state === 'not_active') return res.json(Object.assign(checkPayload(txn, eventOut), v, { valid: false }));
     const label = String((req.body && req.body.door) || '').slice(0, 40) || (who === 'console' ? 'Konsòl' : 'Pòt');

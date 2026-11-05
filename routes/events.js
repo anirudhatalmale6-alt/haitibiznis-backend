@@ -240,7 +240,7 @@ router.get('/:id/sponsors', async (req, res) => {
     const event = await Event.findById(req.params.id).select('sponsors').lean();
     if (!event) return res.status(404).json({ error: 'Event not found' });
     res.set('Cache-Control', 'public, max-age=300');
-    res.json({ sponsors: (event.sponsors || []).map(s => ({ name: s.name || '', logo: s.logo, link: s.link || '' })) });
+    res.json({ sponsors: (event.sponsors || []).map(s => ({ name: s.name || '', logo: s.logo, link: s.link || '', tier: s.tier || '' })) });
   } catch (err) {
     res.status(400).json({ error: 'Event not found' });
   }
@@ -530,6 +530,52 @@ router.get('/:id/rsvp/me', async (req, res) => {
 
 /* The attendee list. Names and phone numbers of real people, so it takes the
    organiser's manage code or his console code - the same gate as editing. */
+/* ═══ ORGANIZER DASHBOARD (4 Nov 2026, Jeffery: "How can we have an event-ticketing platform where organizers cannot
+   see their paid ticket sales, total revenue, and attendance?") ═══ The organizer's own event code (or the console
+   code). Paid tickets only (completed), free registrations counted apart. The organizer's money = the ticket prices
+   (100%); the 7.5% service fee is the buyer's and is shown apart. Check-ins: a group of N counts N people, one per
+   QR scanned. Also gives the organizer his DOOR CODE, so he can run his own door without asking anybody. */
+router.get('/:id/sales', async (req, res) => {
+  try {
+    const event = await openEventFor(req, res, req.params.id);
+    if (!event) return;
+    const Transaction = require('../models/Transaction');
+    const rows = await Transaction.find({ event: event._id, status: 'completed' }).select('+passes').sort({ paidAt: -1 }).limit(5000).lean();
+    const by = {}, list = [];
+    let tickets = 0, revenue = 0, fees = 0, inside = 0, freeN = 0;
+    rows.forEach((t) => {
+      const q = Number(t.qty) || 1, price = Number(t.ticketPrice) || 0;
+      const passes = t.passes && t.passes.length ? t.passes : null;
+      const inN = passes ? passes.filter((p) => p.usedAt).length : (t.usedAt ? q : 0);
+      const paid = Number(t.totalAmount) > 0;
+      if (!paid) freeN += q;
+      const b = by[t.ticketName] || (by[t.ticketName] = { name: t.ticketName, price, sold: 0, revenue: 0, inside: 0 });
+      b.sold += q; b.revenue += price * q; b.inside += inN;
+      tickets += q; revenue += price * q; fees += Number(t.platformFee) || 0; inside += inN;
+      list.push({ ref: t.referenceId, name: t.buyerName || '', phone: t.buyerPhone || '', ticket: t.ticketName, qty: q,
+        amount: price * q, paid, method: t.paymentMethod, paidAt: t.paidAt || t.createdAt, inside: inN,
+        lastIn: passes ? (passes.filter((p) => p.usedAt).map((p) => p.usedAt).sort().pop() || null) : (t.usedAt || null) });
+    });
+    if (!event.doorCode) {
+      const C = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789', crypto = require('crypto');
+      event.doorCode = Array.from(crypto.randomBytes(6), (x) => C[x % C.length]).join('');
+      await Event.updateOne({ _id: event._id, doorCode: { $in: [null, ''] } }, { $set: { doorCode: event.doorCode } });
+      const fresh = await Event.findById(event._id).select('doorCode').lean(); event.doorCode = fresh.doorCode;
+    }
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      event: { _id: event._id, title: event.title, date: event.date, startTime: event.startTime, status: event.status },
+      totals: { tickets, revenue, fees, inside, free: freeN, capacity: (event.tickets || []).reduce((a, t) => a + (Number(t.qty) || 0), 0) },
+      byTicket: Object.values(by).sort((a, b) => b.revenue - a.revenue),
+      sales: list,
+      doorCode: event.doorCode,
+      payout: { amount: revenue, rule: 'after_event' }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/:id/rsvps', async (req, res) => {
   try {
     const event = await openEventFor(req, res, req.params.id);

@@ -52,6 +52,9 @@ const rsvpSchema = new mongoose.Schema({
 const SPONSOR_LOGO = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
 const sponsorSchema = new mongoose.Schema({
   name: { type: String, trim: true, maxlength: 60, default: '' },
+  /* 4 Nov 2026 (Jeffery: "Main Sponsor, Gold Sponsor, Silver Sponsor, Official Partners"): the level decides the
+     size and order on the ticket and the event page. Older sponsors have none = shown as before (one row). */
+  tier: { type: String, enum: ['main', 'gold', 'silver', 'partner', ''], default: '' },
   logo: {
     type: String, required: true,
     validate: {
