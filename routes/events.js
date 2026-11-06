@@ -213,16 +213,24 @@ async function shareHandler(req, res) {
     const d = escapeHtml(desc);
     const e = escapeHtml(emoji);
     const url = escapeHtml(pageUrl);
+    /* 6 Nov 2026 (Jeffery: "We need to fix this tike lakay link"): the WhatsApp preview showed the generic Tikè
+       logo even when the organiser had made an invitation picture. Order: a hosted flyer, then the event's own
+       invitation picture (served by GET /e/:id/img.jpg), then the Tikè Lakay card. ?v= changes with the picture
+       so WhatsApp fetches a new one when the organiser replaces it. */
+    const inv = /^data:image\/(jpeg|jpg|png|webp);base64,/.test(event.inviteImage || '');
+    const ogImg = event.flyerUrl && /^https:\/\//.test(event.flyerUrl) ? event.flyerUrl
+      : inv ? `${(process.env.TL_SHARE_BASE || ('https://' + req.get('host')))}/e/${event._id}/img.jpg?v=${String(event.inviteImage.length)}`
+      : 'https://haitibiznis.com/assets/og-tike-lakay.jpg';
     res.send(`<!DOCTYPE html><html><head>
 <meta charset="utf-8">
 <meta property="og:title" content="${e} ${t} — Tikè Lakay">
 <meta property="og:description" content="${d}">
 <meta property="og:url" content="${url}">
-<meta property="og:image" content="${escapeHtml(event.flyerUrl && /^https:\/\//.test(event.flyerUrl) ? event.flyerUrl : 'https://haitibiznis.com/assets/og-tike-lakay.jpg')}">
+<meta property="og:image" content="${escapeHtml(ogImg)}">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Tikè Lakay | HaitiBiznis">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://haitibiznis.com/assets/og-tike-lakay.jpg">
+<meta name="twitter:image" content="${escapeHtml(ogImg)}">
 <meta name="twitter:title" content="${e} ${t}">
 <meta name="twitter:description" content="${d}">
 <meta http-equiv="refresh" content="0;url=${url}">
@@ -608,3 +616,14 @@ module.exports = router;
    entire API refused to boot with "argument handler must be a function". Every
    route on every service, down, because of where one line sat. */
 module.exports.shareHandler = shareHandler;
+/* the invitation picture as an image file, for link previews (WhatsApp, Facebook) - public, like the event page */
+module.exports.shareImage = async function (req, res) {
+  try {
+    const ev = await Event.findById(req.params.id).select('inviteImage status').lean();
+    const m = ev && /^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/s.exec(ev.inviteImage || '');
+    if (!m) return res.redirect(302, 'https://haitibiznis.com/assets/og-tike-lakay.jpg');
+    res.set('Content-Type', 'image/' + (m[1] === 'jpg' ? 'jpeg' : m[1]));
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(Buffer.from(m[2], 'base64'));
+  } catch (e) { res.redirect(302, 'https://haitibiznis.com/assets/og-tike-lakay.jpg'); }
+};

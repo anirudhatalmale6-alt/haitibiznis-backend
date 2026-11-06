@@ -47,6 +47,7 @@ const eventsRouter = require('./routes/events');
    than under /api so that what lands in a WhatsApp message reads like a link
    to an event and not like a call to a machine. */
 app.get('/e/:id', eventsRouter.shareHandler);
+app.get('/e/:id/img.jpg', eventsRouter.shareImage);   // 6 Nov 2026: link previews show the event's own invitation
 
 /* What generated links should say. Set SHARE_BASE to a branded subdomain
    pointed at this service and every new link is branded; leave it unset and it
