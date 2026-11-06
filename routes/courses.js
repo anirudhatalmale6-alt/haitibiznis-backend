@@ -85,8 +85,10 @@ async function creditTrainingAjan(reg) {
   try {
     const r = await fetch(KOUTYE_API + '/api/referrals/course-sale', { method: 'POST', signal: ctl.signal,
       headers: { 'Content-Type': 'application/json', 'x-internal-key': key },
+      /* 6 Nov 2026: same rule as Tikè Lakay trainings - 30% only for an Ajan on an active, verified LajanMaker badge */
       body: JSON.stringify({ koutyeCode: reg.refCode, phone: reg.phone, name: reg.studentName, email: reg.email, amount,
-        transactionId: reg.referenceId, description: 'LajanMaker — ' + (reg.courseTitle || 'fòmasyon') }) });
+        transactionId: reg.referenceId, allowedCodes: await require('../utils/certifiedCodes').certifiedAjanCodes(),
+        description: 'LajanMaker — ' + (reg.courseTitle || 'fòmasyon') }) });
     out = await r.json().catch(() => null);
   } finally { clearTimeout(t); }
   const res = (out && out.result) || {};

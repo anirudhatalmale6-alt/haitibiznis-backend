@@ -1353,6 +1353,13 @@ router.post('/admin/ride-refunds/:id/refunded', async (req, res) => {
     reference: String(b.reference || '').slice(0, 120), note: String(b.note || '').slice(0, 300), amount: b.amount });
   res.status(r.status).json(r.data);
 });
+/* 6 Nov 2026 (Koli option A, Jeffery: "Add the 15-minute alert for Jennifer"): paid parcels still without a driver,
+   red after 15 minutes, with the nearest eligible drivers to call. Console code (router.use('/admin', requirePin)). */
+router.get('/admin/parcels-waiting', async (req, res) => {
+  const r = await mppJob('GET', '/parcels-waiting');
+  res.set('Cache-Control', 'no-store');
+  res.status(r.status).json(r.data);
+});
 router.get('/admin/parcel-refunds', async (req, res) => {
   const st = ['owed', 'refunded', 'all'].includes(req.query.status) ? req.query.status : 'owed';
   const r = await mppJob('GET', '/parcel-refunds?status=' + st);

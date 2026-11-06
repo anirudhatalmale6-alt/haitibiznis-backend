@@ -121,7 +121,7 @@ function adminTicketView(t, ev) {
     ticket: t.ticketName, qty: t.qty || 1, price: t.ticketPrice, total: t.totalAmount, fee: t.platformFee,
     currency: t.currency || 'HTG', method: t.paymentMethod, buyer: { name: t.buyerName || '', phone: t.buyerPhone || '' },
     paidAt: t.paidAt || null, usedAt: t.usedAt || null,
-    commission: { plan: t.commissionPlan || '', result: t.commissionResult || '', amount: t.commissionAmount || 0, agent: t.commissionAgent || '' },
+    commission: { plan: t.commissionPlan || '', note: t.commissionNote || '', result: t.commissionResult || '', amount: t.commissionAmount || 0, agent: t.commissionAgent || '' },
     refund: t.status === 'refunded' ? { at: t.refundedAt, ref: t.refundRef, by: t.refundBy, note: t.refundNote || '', reversal: t.commissionReversal || null } : null };
 }
 
@@ -197,6 +197,12 @@ async function creditAgent(txn) {
     const evc = await Event.findById(txn.event).select('title trainingCommission koutyeEnabled').lean().catch(() => null);
     const training = !!(evc && evc.trainingCommission && evc.trainingCommission.enabled && evc.koutyeEnabled) && txn.currency !== 'USD';
 
+    /* 6 Nov 2026 03:24, Jeffery: the 30% only for an Ajan holding an ACTIVE, VERIFIED LajanMaker badge (LMA-...),
+       enforced HERE on the server: the engine is told which Ajan codes qualify and pays 30% only if the Ajan who
+       would be credited is one of them. Otherwise the sale falls back to the standard Tikè Lakay rule (1.5% from the
+       fee) - what any other event pays - and the ticket says why (commissionNote). */
+    const certified = training ? await require('../utils/certifiedCodes').certifiedAjanCodes() : null;
+    let notCertified = '';
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10000);
     let out = null;
@@ -213,6 +219,7 @@ async function creditAgent(txn) {
           /* The reference is what makes this safe to call twice: the engine
              refuses to pay the same agent twice for the same one. */
           transactionId: txn.referenceId,
+          allowedCodes: certified || undefined,
           description: (training ? 'LajanMaker training 30% — ' + String(evc.title || '').trim() + ' — ' : 'Tike Lakay — ') + (txn.ticketName || 'tikè')
         }),
         signal: controller.signal
@@ -222,19 +229,36 @@ async function creditAgent(txn) {
       clearTimeout(timer);
     }
 
-    const res = (out && out.result) || {};
+    let res = (out && out.result) || {};
+    let plan = training ? 'training30' : 'ticket';
+    if (training && res.reason === 'not_certified') {
+      notCertified = res.koutyeCode || txn.koutyeCode || '';
+      plan = 'ticket';
+      const c2 = new AbortController();
+      const t2 = setTimeout(() => c2.abort(), 10000);
+      try {
+        const r2 = await fetch(KOUTYE_API + '/api/referrals/ticket-sale', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-key': key }, signal: c2.signal,
+          body: JSON.stringify({ koutyeCode: txn.koutyeCode || null, phone: txn.buyerPhone, name: txn.buyerName, email: txn.buyerEmail,
+            amount: subtotal, transactionId: txn.referenceId, description: 'Tike Lakay — ' + (txn.ticketName || 'tikè') })
+        });
+        const o2 = await r2.json().catch(() => null);
+        res = (o2 && o2.result) || {};
+      } finally { clearTimeout(t2); }
+    }
     /* Written down either way. A commission that silently did not happen is
        exactly the failure this whole module exists to stop. */
     await Transaction.updateOne({ _id: txn._id }, {
       $set: {
         commissionResult: res.reason || 'unknown',
-        commissionPlan: training ? 'training30' : 'ticket',
+        commissionPlan: plan,
+        commissionNote: notCertified ? 'not_certified ' + notCertified : '',
         commissionAmount: res.amount || 0,
         commissionAgent: res.koutyeCode || null,
         commissionCheckedAt: new Date()
       }
     }).catch(() => {});
-    console.log('[TIKELAKAY] ' + txn.referenceId + ' plan=' + (training ? 'training30' : 'ticket') + ' agent=' + (res.koutyeCode || '-') +
+    console.log('[TIKELAKAY] ' + txn.referenceId + ' plan=' + plan + (notCertified ? ' (30% refused: ' + notCertified + ' has no active badge)' : '') + ' agent=' + (res.koutyeCode || '-') +
                 ' amount=' + (res.amount || 0) + ' reason=' + (res.reason || '-'));
   } catch (err) {
     console.error('[TIKELAKAY] creditAgent failed for ' +
@@ -945,7 +969,7 @@ router.get('/admin/event/:eventId/ajan-sales', require('../utils/consolePin').re
     const ev = await Event.findById(req.params.eventId).select('title date startTime organizer koutyeEnabled trainingCommission').lean();
     if (!ev) return res.status(404).json({ error: 'not_found' });
     const rows = await Transaction.find({ event: ev._id, status: { $in: ['completed', 'refunded'] }, totalAmount: { $gt: 0 } })
-      .select('referenceId status buyerName buyerPhone ticketName qty ticketPrice totalAmount paymentMethod paidAt commissionPlan commissionResult commissionAmount commissionAgent refundedAt refundRef')
+      .select('referenceId status buyerName buyerPhone ticketName qty ticketPrice totalAmount paymentMethod paidAt commissionPlan commissionNote commissionResult commissionAmount commissionAgent refundedAt refundRef')
       .sort({ paidAt: -1 }).limit(500).lean();
     let st = {}, engineOk = false;
     const key = process.env.INTERNAL_SERVICE_KEY;
@@ -969,7 +993,7 @@ router.get('/admin/event/:eventId/ajan-sales', require('../utils/consolePin').re
       }
       return { ref: t.referenceId, status: t.status, buyer: t.buyerName || '', phone: t.buyerPhone || '', ticket: t.ticketName, qty: q, amount: amt,
         paid: t.totalAmount, method: t.paymentMethod, paidAt: t.paidAt || null, refundedAt: t.refundedAt || null, refundRef: t.refundRef || '',
-        plan: t.commissionPlan || '', agent: (c && c.koutyeCode) || t.commissionAgent || '', commission: c ? c.amount : (t.commissionAmount || 0),
+        plan: t.commissionPlan || '', note: t.commissionNote || '', agent: (c && c.koutyeCode) || t.commissionAgent || '', commission: c ? c.amount : (t.commissionAmount || 0),
         result: t.commissionResult || '', payout: c ? c.status : (engineOk ? 'none' : 'unknown'), payoutAt: c ? c.paidAt : null };
     });
     Object.keys(sum).forEach((k) => { sum[k] = Math.round(sum[k] * 100) / 100; });

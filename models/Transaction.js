@@ -17,6 +17,8 @@ const transactionSchema = new mongoose.Schema({
   /* 6 Nov 2026: which Ajan rule paid this ticket, fixed at the confirmed payment: 'ticket' = 1.5% from the 7.5%
      fee, 'training30' = 30% of the price from the organizer's (LajanMaker's) revenue. */
   commissionPlan: { type: String },
+  /* e.g. "not_certified KB-XXXX": a 30% training sale whose Ajan had no active LajanMaker badge -> standard 1.5% */
+  commissionNote: { type: String },
   /* 6 Nov 2026: a ticket refunded from the console (money sent back first, then recorded with its reference) */
   refundedAt: { type: Date },
   refundRef: { type: String },
