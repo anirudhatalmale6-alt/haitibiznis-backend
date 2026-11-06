@@ -249,7 +249,9 @@ async function shareHandler(req, res) {
     const when = date + (time ? ` · ${time}` : '');
     const desc = `${when}${loc ? ' | ' + loc : ''}${event.description ? ' — ' + event.description.substring(0, 120) : ''}`;
     const emoji = event.typeEmoji || '🎪';
-    const pageUrl = `${TL_BASE}/event.html?id=${event._id}`;
+    /* 6 Nov 2026: an Ajan's share link (/e/:id?ref=CODE) keeps his code on the way to the event page */
+    const refc = String(req.query.ref || '').trim().toUpperCase();
+    const pageUrl = `${TL_BASE}/event.html?id=${event._id}` + (/^[A-Z0-9][A-Z0-9-]{2,31}$/.test(refc) ? '&ref=' + encodeURIComponent(refc) : '');
 
     /* Everything below is written by whoever created the event, and creating
      * an event needs no account. Only the double quote used to be escaped,
