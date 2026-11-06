@@ -62,7 +62,7 @@ async function openEventFor(req, res, id) {
 // needs the COUNT of who is coming, never the rows. Only the organiser reads
 // those, through GET /:id/rsvps, behind their manage code.
 const TL_BASE = require('../utils/tlBase');
-const PRIVATE_FIELDS = '-moncashNumber -natcashNumber -organizerEmail -doorCode -rsvps';
+const PRIVATE_FIELDS = '-moncashNumber -natcashNumber -organizerEmail -doorCode -rsvps -trainingCommission.setBy -trainingCommission.setAt';
 const LIST_FIELDS = PRIVATE_FIELDS + ' -inviteImage -sponsors';
 
 /* Anything a stranger typed that ends up inside HTML. The share page below
@@ -84,6 +84,7 @@ router.post('/', async (req, res) => {
     delete body.manageSalt;
     delete body.manageHash;
     delete body.rsvps;
+    delete body.trainingCommission;   /* admin-only (30% LajanMaker training): never from the organizer's form */
 
     const event = new Event(body);
     const manageCode = Event.newManageCode();
@@ -146,6 +147,54 @@ router.get('/', async (req, res) => {
  *      and nothing already shared broken - the old path still answers.
  */
 router.get('/:id/share', shareHandler);
+
+/* ═══ 6 Nov 2026, Jeffery: "Create an admin-controlled commission setting available only to authorized
+   administrators, configurable per eligible LajanMaker training event." ═══════════════════════════════════════
+   Console code only (Jeffery / Jennifer). Eligible = a TRAINING event (type fòmasyon) sold in HTG. ON: the Ajan
+   whose link sold the place earns 30% of the training price, out of the organizer's revenue (the organizer's
+   payout in /sales shows it taken off). OFF: the standard 1.5% from the 7.5% fee. The rule is fixed on each
+   ticket when its payment is confirmed (Transaction.commissionPlan), so switching later never re-prices a sale.
+   `sharing` (optional) switches the event's Ajan share button (koutyeEnabled) in the same call. */
+const TRAINING_TYPE = /^f[oò]masyon$/i;
+router.get('/admin/trainings', requirePin, async (req, res) => {
+  try {
+    const since = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
+    const rows = await Event.find({ type: { $in: ['fòmasyon', 'fomasyon', 'Fòmasyon'] }, status: { $ne: 'cancelled' }, date: { $gte: since } })
+      .select('title date startTime organizer type koutyeEnabled trainingCommission tickets currency status').sort({ date: 1 }).limit(200).lean();
+    res.set('Cache-Control', 'no-store');
+    res.json({ events: rows.map((e) => ({ _id: e._id, title: e.title, date: e.date, startTime: e.startTime, organizer: e.organizer,
+      koutyeEnabled: !!e.koutyeEnabled, training30: !!(e.trainingCommission && e.trainingCommission.enabled),
+      setBy: (e.trainingCommission && e.trainingCommission.setBy) || '', setAt: (e.trainingCommission && e.trainingCommission.setAt) || null,
+      currency: e.currency || 'HTG', tickets: (e.tickets || []).map((t) => ({ name: t.name, price: t.price, sold: t.sold || 0 })) })) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/:id/training-commission', requirePin, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const by = String(b.by || '').trim().slice(0, 60);
+    if (!by) return res.status(400).json({ error: 'name_required' });
+    if (typeof b.enabled !== 'boolean' && typeof b.sharing !== 'boolean') return res.status(400).json({ error: 'nothing_to_change' });
+    const event = await Event.findById(req.params.id);
+    if (!event) return res.status(404).json({ error: 'not_found' });
+    if (b.enabled === true) {
+      if (!TRAINING_TYPE.test(String(event.type || ''))) return res.status(400).json({ error: 'not_training' });
+      if ((event.currency || 'HTG') !== 'HTG') return res.status(400).json({ error: 'htg_only' });
+    }
+    if (typeof b.enabled === 'boolean') {
+      event.trainingCommission = { enabled: b.enabled, setBy: 'console:' + by, setAt: new Date() };
+    }
+    if (typeof b.sharing === 'boolean') event.koutyeEnabled = b.sharing;
+    await event.save();
+    console.log('[TIKELAKAY] training30 ' + event._id + ' "' + event.title + '" enabled=' + !!event.trainingCommission.enabled +
+                ' sharing=' + !!event.koutyeEnabled + ' by=console:' + by);
+    res.json({ success: true, event: { _id: event._id, title: event.title, koutyeEnabled: !!event.koutyeEnabled,
+      training30: !!event.trainingCommission.enabled, setBy: event.trainingCommission.setBy, setAt: event.trainingCommission.setAt } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 async function shareHandler(req, res) {
   try {
@@ -287,6 +336,8 @@ router.get('/:id', async (req, res) => {
     out.rsvpGoing = yes.length;
     out.rsvpAttending = yes.reduce((a, r) => a + (r.guests || 1), 0);
     out.rsvpDeclined = rows.filter(r => r.response === 'no').length;
+    /* 6 Nov 2026: the event page tells an Ajan which rule applies (30% LajanMaker training vs 1.5%) */
+    out.training30 = !!(out.trainingCommission && out.trainingCommission.enabled);
     res.json(out);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -303,7 +354,7 @@ router.put('/:id', async (req, res) => {
        editing the event, and the sold counts are money - they are moved by
        $inc from a confirmed payment and must not be settable by hand. */
     const body = { ...req.body };
-    ['manageSalt', 'manageHash', 'manageCode', 'rsvps', 'views', '_id', '__v'].forEach(k => delete body[k]);
+    ['manageSalt', 'manageHash', 'manageCode', 'rsvps', 'views', '_id', '__v', 'trainingCommission'].forEach(k => delete body[k]);
     if (Array.isArray(body.tickets)) {
       const soldByName = {};
       (event.tickets || []).forEach(t => { soldByName[t.name] = t.sold || 0; });
@@ -550,7 +601,7 @@ router.get('/:id/sales', async (req, res) => {
     const Transaction = require('../models/Transaction');
     const rows = await Transaction.find({ event: event._id, status: 'completed' }).select('+passes').sort({ paidAt: -1 }).limit(5000).lean();
     const by = {}, list = [];
-    let tickets = 0, revenue = 0, fees = 0, inside = 0, freeN = 0;
+    let tickets = 0, revenue = 0, fees = 0, inside = 0, freeN = 0, ajan30 = 0;
     rows.forEach((t) => {
       const q = Number(t.qty) || 1, price = Number(t.ticketPrice) || 0;
       const passes = t.passes && t.passes.length ? t.passes : null;
@@ -560,6 +611,7 @@ router.get('/:id/sales', async (req, res) => {
       const b = by[t.ticketName] || (by[t.ticketName] = { name: t.ticketName, price, sold: 0, revenue: 0, inside: 0 });
       b.sold += q; b.revenue += price * q; b.inside += inN;
       tickets += q; revenue += price * q; fees += Number(t.platformFee) || 0; inside += inN;
+      if (t.commissionPlan === 'training30' && t.commissionResult === 'ok') ajan30 += Number(t.commissionAmount) || 0;
       list.push({ ref: t.referenceId, name: t.buyerName || '', phone: t.buyerPhone || '', ticket: t.ticketName, qty: q,
         amount: price * q, paid, method: t.paymentMethod, paidAt: t.paidAt || t.createdAt, inside: inN,
         lastIn: passes ? (passes.filter((p) => p.usedAt).map((p) => p.usedAt).sort().pop() || null) : (t.usedAt || null) });
@@ -577,7 +629,9 @@ router.get('/:id/sales', async (req, res) => {
       byTicket: Object.values(by).sort((a, b) => b.revenue - a.revenue),
       sales: list,
       doorCode: event.doorCode,
-      payout: { amount: revenue, rule: 'after_event' }
+      /* 6 Nov 2026: on a LajanMaker training (30% switch), the Ajan's 30% is paid from the organizer's revenue */
+      ajanTraining: { rate: 0.30, amount: Math.round(ajan30 * 100) / 100 },
+      payout: { amount: Math.round((revenue - ajan30) * 100) / 100, rule: 'after_event' }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

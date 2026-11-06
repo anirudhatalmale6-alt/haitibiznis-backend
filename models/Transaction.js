@@ -14,6 +14,15 @@ const transactionSchema = new mongoose.Schema({
   // free ticket could ever be issued at all.
   paymentMethod: { type: String, enum: ['moncash', 'natcash', 'card', 'all', 'free'] },
   status: { type: String, enum: ['pending', 'completed', 'failed', 'refunded'], default: 'pending' },
+  /* 6 Nov 2026: which Ajan rule paid this ticket, fixed at the confirmed payment: 'ticket' = 1.5% from the 7.5%
+     fee, 'training30' = 30% of the price from the organizer's (LajanMaker's) revenue. */
+  commissionPlan: { type: String },
+  /* 6 Nov 2026: a ticket refunded from the console (money sent back first, then recorded with its reference) */
+  refundedAt: { type: Date },
+  refundRef: { type: String },
+  refundBy: { type: String },
+  refundNote: { type: String },
+  commissionReversal: { type: mongoose.Schema.Types.Mixed },
   buyerName: { type: String },
   buyerPhone: { type: String },
   buyerEmail: { type: String },

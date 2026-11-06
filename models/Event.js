@@ -117,6 +117,15 @@ const eventSchema = new mongoose.Schema({
   // and driver approval, and none of that belongs in a volunteer's pocket.
   doorCode: { type: String },
   koutyeEnabled: { type: Boolean, default: false },
+  /* 6 Nov 2026, Jeffery: LajanMaker Academy's OWN paid training events - the Ajan earns 30% of the training price
+     (1,000 HTG -> 300 HTG), paid out of LajanMaker's ticket revenue, NOT out of the 7.5% Tikè Lakay fee. Every
+     other event keeps the standard 1.5%. Switched only by an administrator (console code, events.js
+     /:id/training-commission); an organizer's create/edit can never set it. */
+  trainingCommission: {
+    enabled: { type: Boolean, default: false },
+    setBy: { type: String, default: '' },
+    setAt: { type: Date }
+  },
   creatorPct: { type: Number, default: 0 },
   status: { type: String, enum: ['draft', 'published', 'cancelled'], default: 'published' },
   views: { type: Number, default: 0 },

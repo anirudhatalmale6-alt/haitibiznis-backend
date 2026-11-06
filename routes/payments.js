@@ -93,6 +93,38 @@ async function countSold(txn) {
   } catch (e) {}
 }
 
+/* ═══ 6 Nov 2026, Jeffery: "Handle refunds by reversing unpaid or pending commissions." ══════════════════════
+   A paid ticket refunded from the console (console code). The money is sent back FIRST (MonCash/NatCash/card),
+   then recorded here with its transfer reference. Once only (atomic completed -> refunded). The ticket stops
+   opening the door (only 'completed' tickets scan), its place goes back on sale, and the Ajan engine reverses
+   every commission line on this ticket that is not yet PAID; a line already paid out is reported back
+   (alreadyPaid), never silently kept. */
+async function reverseAgent(txn, why) {
+  const key = process.env.INTERNAL_SERVICE_KEY;
+  if (!key) return { reversed: 0, reason: 'no_service_key' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const r = await fetch(KOUTYE_API + '/api/referrals/reverse', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-key': key },
+      body: JSON.stringify({ transactionId: txn.referenceId, reason: why }), signal: controller.signal
+    });
+    const out = await r.json().catch(() => null);
+    if (!r.ok || !out) return { reversed: 0, reason: 'engine_' + r.status };
+    return out.result || { reversed: 0 };
+  } catch (e) {
+    return { reversed: 0, reason: 'engine_unreachable' };
+  } finally { clearTimeout(timer); }
+}
+function adminTicketView(t, ev) {
+  return { ref: t.referenceId, status: t.status, event: ev ? { _id: ev._id, title: ev.title, date: ev.date } : null,
+    ticket: t.ticketName, qty: t.qty || 1, price: t.ticketPrice, total: t.totalAmount, fee: t.platformFee,
+    currency: t.currency || 'HTG', method: t.paymentMethod, buyer: { name: t.buyerName || '', phone: t.buyerPhone || '' },
+    paidAt: t.paidAt || null, usedAt: t.usedAt || null,
+    commission: { plan: t.commissionPlan || '', result: t.commissionResult || '', amount: t.commissionAmount || 0, agent: t.commissionAgent || '' },
+    refund: t.status === 'refunded' ? { at: t.refundedAt, ref: t.refundRef, by: t.refundBy, note: t.refundNote || '', reversal: t.commissionReversal || null } : null };
+}
+
 /* Mark a ticket paid, once. The find-and-update is the whole point: it is
  * atomic, so if the webhook and the ticket page both discover the same payment
  * at the same second, exactly one of them wins and the sale is counted once.
@@ -156,12 +188,20 @@ async function creditAgent(txn) {
     const qty = Number(txn.qty) || 1;
     const subtotal = price * qty;
     if (subtotal <= 0) return;
+    /* 6 Nov 2026, Jeffery: LajanMaker Academy's OWN training events, switched on by an administrator: the Ajan
+       earns 30% of the training price, paid from LajanMaker's revenue - NOT from the 7.5% fee (engine platform
+       'lajanmaker'). Every other event: the standard 1.5% from the fee. Decided HERE, once, at the confirmed
+       payment, and written on the ticket (commissionPlan): switching the event later never re-prices a sale.
+       It needs the event's Ajan sharing ON as well (LajanMaker pays it, so LajanMaker must be promoting through
+       Ajan); otherwise the standard rule applies. USD (international) tickets always stay on the standard rule. */
+    const evc = await Event.findById(txn.event).select('title trainingCommission koutyeEnabled').lean().catch(() => null);
+    const training = !!(evc && evc.trainingCommission && evc.trainingCommission.enabled && evc.koutyeEnabled) && txn.currency !== 'USD';
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10000);
     let out = null;
     try {
-      const r = await fetch(KOUTYE_API + '/api/referrals/ticket-sale', {
+      const r = await fetch(KOUTYE_API + (training ? '/api/referrals/course-sale' : '/api/referrals/ticket-sale'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-internal-key': key },
         body: JSON.stringify({
@@ -173,7 +213,7 @@ async function creditAgent(txn) {
           /* The reference is what makes this safe to call twice: the engine
              refuses to pay the same agent twice for the same one. */
           transactionId: txn.referenceId,
-          description: 'Tike Lakay — ' + (txn.ticketName || 'tikè')
+          description: (training ? 'LajanMaker training 30% — ' + String(evc.title || '').trim() + ' — ' : 'Tike Lakay — ') + (txn.ticketName || 'tikè')
         }),
         signal: controller.signal
       });
@@ -188,12 +228,13 @@ async function creditAgent(txn) {
     await Transaction.updateOne({ _id: txn._id }, {
       $set: {
         commissionResult: res.reason || 'unknown',
+        commissionPlan: training ? 'training30' : 'ticket',
         commissionAmount: res.amount || 0,
         commissionAgent: res.koutyeCode || null,
         commissionCheckedAt: new Date()
       }
     }).catch(() => {});
-    console.log('[TIKELAKAY] ' + txn.referenceId + ' agent=' + (res.koutyeCode || '-') +
+    console.log('[TIKELAKAY] ' + txn.referenceId + ' plan=' + (training ? 'training30' : 'ticket') + ' agent=' + (res.koutyeCode || '-') +
                 ' amount=' + (res.amount || 0) + ' reason=' + (res.reason || '-'));
   } catch (err) {
     console.error('[TIKELAKAY] creditAgent failed for ' +
@@ -851,6 +892,91 @@ router.get('/door-code/:eventId', require('../utils/consolePin').requirePin, asy
       await event.save();
     }
     res.json({ eventId: event._id, title: event.title, doorCode: event.doorCode });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/admin/ticket/:referenceId', require('../utils/consolePin').requirePin, async (req, res) => {
+  try {
+    const t = await Transaction.findOne({ referenceId: String(req.params.referenceId).trim().toUpperCase() }).lean();
+    if (!t) return res.status(404).json({ error: 'ticket_not_found' });
+    const ev = await Event.findById(t.event).select('title date').lean();
+    res.set('Cache-Control', 'no-store');
+    res.json({ ticket: adminTicketView(t, ev) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/admin/ticket/:referenceId/refund', require('../utils/consolePin').requirePin, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const by = String(b.by || '').trim().slice(0, 60), reference = String(b.reference || '').trim().slice(0, 120);
+    if (!by) return res.status(400).json({ error: 'name_required' });
+    if (!reference) return res.status(400).json({ error: 'reference_required' });
+    const refId = String(req.params.referenceId).trim().toUpperCase();
+    const t = await Transaction.findOneAndUpdate({ referenceId: refId, status: 'completed' },
+      { $set: { status: 'refunded', refundedAt: new Date(), refundRef: reference, refundBy: 'console:' + by, refundNote: String(b.note || '').slice(0, 300) } },
+      { new: true });
+    if (!t) {
+      const x = await Transaction.findOne({ referenceId: refId }).lean();
+      if (!x) return res.status(404).json({ error: 'ticket_not_found' });
+      return res.status(409).json({ error: x.status === 'refunded' ? 'already_refunded' : 'not_paid' });
+    }
+    await Event.updateOne({ _id: t.event, 'tickets.name': t.ticketName, 'tickets.sold': { $gte: t.qty || 1 } },
+      { $inc: { 'tickets.$.sold': -(t.qty || 1) } }).catch(() => {});
+    const rev = await reverseAgent(t, 'Tike Lakay ticket refunded (ref ' + reference + ')');
+    await Transaction.updateOne({ _id: t._id }, { $set: { commissionReversal: Object.assign({ at: new Date() }, rev) } }).catch(() => {});
+    console.log('[TIKELAKAY] refund ' + t.referenceId + ' by=console:' + by + ' ref=' + reference + ' reversed=' + (rev.reversed || 0) +
+                ' alreadyPaid=' + ((rev.alreadyPaid || []).length) + (rev.reason ? ' reason=' + rev.reason : ''));
+    const fresh = await Transaction.findById(t._id).lean();
+    const ev = await Event.findById(t.event).select('title date').lean();
+    res.json({ success: true, ticket: adminTicketView(fresh, ev), reversal: rev });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* One event's paid tickets with their Ajan commission (console code): who bought, when the payment was CONFIRMED,
+   the rule (30% training / 1.5%), the Ajan, the amount, and the payout status the Ajan engine holds for it
+   (pending = owed to the Ajan, paid, reversed = cancelled by a refund). Read-only. */
+router.get('/admin/event/:eventId/ajan-sales', require('../utils/consolePin').requirePin, async (req, res) => {
+  try {
+    const ev = await Event.findById(req.params.eventId).select('title date startTime organizer koutyeEnabled trainingCommission').lean();
+    if (!ev) return res.status(404).json({ error: 'not_found' });
+    const rows = await Transaction.find({ event: ev._id, status: { $in: ['completed', 'refunded'] }, totalAmount: { $gt: 0 } })
+      .select('referenceId status buyerName buyerPhone ticketName qty ticketPrice totalAmount paymentMethod paidAt commissionPlan commissionResult commissionAmount commissionAgent refundedAt refundRef')
+      .sort({ paidAt: -1 }).limit(500).lean();
+    let st = {}, engineOk = false;
+    const key = process.env.INTERNAL_SERVICE_KEY;
+    if (key && rows.length) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      try {
+        const r = await fetch(KOUTYE_API + '/api/internal/commission-status', { method: 'POST', signal: controller.signal,
+          headers: { 'Content-Type': 'application/json', 'x-internal-key': key }, body: JSON.stringify({ transactionIds: rows.map((t) => t.referenceId) }) });
+        const d = await r.json().catch(() => null);
+        if (r.ok && d && Array.isArray(d.commissions)) { engineOk = true; d.commissions.forEach((c) => { st[c.transactionId] = c; }); }
+      } catch (e) {} finally { clearTimeout(timer); }
+    } else if (!rows.length) engineOk = true;
+    const sum = { tickets: 0, revenue: 0, ajanOwed: 0, ajanPaid: 0, ajanReversed: 0, ajan30: 0 };
+    const sales = rows.map((t) => {
+      const c = st[t.referenceId] || null, q = Number(t.qty) || 1, amt = (Number(t.ticketPrice) || 0) * q;
+      if (t.status === 'completed') { sum.tickets += q; sum.revenue += amt; }
+      if (c) {
+        if (c.status === 'paid') sum.ajanPaid += c.amount; else if (c.status === 'reversed') sum.ajanReversed += c.amount; else if (!['rejected', 'expired'].includes(c.status)) sum.ajanOwed += c.amount;
+        if (c.platform === 'lajanmaker' && c.status !== 'reversed' && c.status !== 'rejected') sum.ajan30 += c.amount;
+      }
+      return { ref: t.referenceId, status: t.status, buyer: t.buyerName || '', phone: t.buyerPhone || '', ticket: t.ticketName, qty: q, amount: amt,
+        paid: t.totalAmount, method: t.paymentMethod, paidAt: t.paidAt || null, refundedAt: t.refundedAt || null, refundRef: t.refundRef || '',
+        plan: t.commissionPlan || '', agent: (c && c.koutyeCode) || t.commissionAgent || '', commission: c ? c.amount : (t.commissionAmount || 0),
+        result: t.commissionResult || '', payout: c ? c.status : (engineOk ? 'none' : 'unknown'), payoutAt: c ? c.paidAt : null };
+    });
+    Object.keys(sum).forEach((k) => { sum[k] = Math.round(sum[k] * 100) / 100; });
+    res.set('Cache-Control', 'no-store');
+    res.json({ event: { _id: ev._id, title: ev.title, date: ev.date, organizer: ev.organizer, koutyeEnabled: !!ev.koutyeEnabled,
+      training30: !!(ev.trainingCommission && ev.trainingCommission.enabled) }, engine: engineOk, totals: sum,
+      organizerPayout: Math.round((sum.revenue - sum.ajan30) * 100) / 100, sales });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
