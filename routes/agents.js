@@ -1283,7 +1283,7 @@ router.get('/admin/drivers/:id', async (req, res) => {
 });
 router.post('/admin/drivers/:id/:act', async (req, res) => {
   const act = req.params.act;
-  if (!UUID_RE.test(req.params.id) || !['approve', 'reject', 'agent', 'fix', 'oavct', 'document', 'welcome', 'edit', 'reopen'].includes(act)) return res.status(404).json({ error: 'not_found' });
+  if (!UUID_RE.test(req.params.id) || !['approve', 'reject', 'agent', 'fix', 'oavct', 'document', 'welcome', 'edit', 'reopen', 'pin-reset'].includes(act)) return res.status(404).json({ error: 'not_found' });
   const b = req.body || {};
   let code = String(b.code || '').trim();
   /* An Ajan can be named by his badge number: it becomes his referral code. */
