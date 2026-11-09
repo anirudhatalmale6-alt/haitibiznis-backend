@@ -84,6 +84,7 @@ app.use('/api/courses', coursesRouter);
 app.use('/api/instructors', require('./routes/instructors'));
 /* Certified LajanMaker agents: the badge QR's verification page + its console. */
 app.use('/api/agents', require('./routes/agents'));
+app.use('/api/academy', require('./routes/academy'));   // 9 Nov 2026: certification exam records + Jennifer's dashboard
 
 /* `commit` is here because for months there was no way to tell from outside
  * which code was actually running. Render's push webhook had stopped firing,
