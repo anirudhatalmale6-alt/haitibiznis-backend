@@ -33,6 +33,7 @@ const { requirePin } = require('../utils/consolePin');
 const clientIp = require('../utils/clientIp');
 
 const ID_RE = /^LMA-\d{4}-\d{6}$/;
+const PAID_GATE_FROM = new Date('2026-11-10T00:00:00Z');   // OPTION A: badges registered from this day need a paid seat
 const VALID_MONTHS = 12;              // default validity, changeable per agent
 const MAX_PHOTO = 300 * 1024;         // decoded bytes; a 460px JPEG is ~50 KB
 
@@ -109,6 +110,21 @@ router.post('/register', async (req, res) => {
     const b = req.body || {};
     const name = String(b.name || '');
     const ymd = String(b.date || '');
+    /* 10 Nov 2026: an ID the SERVER issued at the exam (random, unique - not name + date): the page only adds the
+       photo, and only with the same name. Its phone and name stay what the paid exam recorded. */
+    if (b.agentId && ID_RE.test(normId(b.agentId))) {
+      const own = await CertifiedAgent.findOne({ agentId: normId(b.agentId), examAttempt: { $ne: '' } }).select('+photo');
+      if (own) {
+        const nk = require('./academy').nameKey;
+        if (nk(own.name) !== nk(name)) return res.status(400).json({ error: 'id_mismatch' });
+        if (own.status === 'pending') {
+          const ph = b.photo ? decodePhoto(b.photo) : null;
+          if (ph) { own.photo = ph.buf; own.photoMime = ph.mime; own.photoAt = new Date(); }
+          own.submissions += 1; own.lastSubmittedAt = new Date(); await own.save();
+        }
+        return res.json({ agentId: own.agentId, state: own.publicState() });
+      }
+    }
     const agentId = CertifiedAgent.certNumber(name, ymd);
     if (!agentId || !name.trim()) return res.status(400).json({ error: 'name_and_date_required' });
     /* The phone sends the number it printed; it must be the one the server
@@ -466,7 +482,9 @@ router.get('/admin/list', async (req, res) => {
     /* activation date, end date and days left of each Ajan's pilot - the same figures his app shows */
     const P = {}; (await AjanPilot.find({ agentId: { $in: list.map((a) => a.agentId) } })).forEach((p) => { P[p.agentId] = p; });
     const now = new Date();
-    res.json({ agents: list.map((a) => Object.assign(adminView(a), { pilot: pilotView(P[a.agentId], now) })), counts: Object.fromEntries(counts.map((c) => [c._id, c.n])),
+    /* 10 Nov 2026: PEYE / PA PEYE next to each badge (a paid Academy seat for its phone) */
+    const seat = {}; await Promise.all(list.map(async (a) => { seat[a.agentId] = await require('./academy').hasPaidSeat(a.phone); }));
+    res.json({ agents: list.map((a) => Object.assign(adminView(a), { pilot: pilotView(P[a.agentId], now), paid: seat[a.agentId], paidRequired: !!(a.createdAt && a.createdAt >= PAID_GATE_FROM) })), counts: Object.fromEntries(counts.map((c) => [c._id, c.n])),
                services: CertifiedAgent.SERVICES });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -571,6 +589,13 @@ router.patch('/admin/:agentId', async (req, res) => {
     if (b.status && b.status !== a.status) {
       if (!['pending', 'active', 'suspended', 'revoked'].includes(b.status)) return res.status(400).json({ error: 'bad_status' });
       if (b.status === 'active') {
+        /* 10 Nov 2026 (Jeffery, OPTION A): "No unpaid student should receive an official certificate or an active
+           Ajan badge, even if they pass an exam." Every badge registered from today needs a paid Academy seat for
+           its phone (a confirmed Tikè Lakay Formation ticket, or a payment Jennifer recorded). Badges registered
+           before today came from trainings paid in person and are left as they were. */
+        if (a.createdAt && a.createdAt >= PAID_GATE_FROM && !(await require('./academy').hasPaidSeat(a.phone))) {
+          return res.status(409).json({ error: 'not_paid' });
+        }
         if (!a.approvedAt) a.approvedAt = new Date();
         if (!a.expiresAt) a.expiresAt = addMonths(a.certifiedAt, VALID_MONTHS);
       }

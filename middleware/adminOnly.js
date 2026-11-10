@@ -66,7 +66,11 @@ const ADMIN_ONLY = [
   ['POST', /^\/api\/agents\/admin(\/.*)?$/],
   ['PATCH', /^\/api\/agents\/admin(\/.*)?$/],
   ['PUT', /^\/api\/agents\/admin(\/.*)?$/],
-  ['DELETE', /^\/api\/agents\/admin(\/.*)?$/]
+  ['DELETE', /^\/api\/agents\/admin(\/.*)?$/],
+  /* 10 Nov 2026: the Academy console (routes/academy.js): exam results, paid seats, the trainer's code */
+  ['GET', /^\/api\/academy\/admin(\/.*)?$/],
+  ['POST', /^\/api\/academy\/admin(\/.*)?$/],
+  ['PATCH', /^\/api\/academy\/admin(\/.*)?$/]
 ];
 
 /* 🛑 16 Oct 2026: Express matches routes IGNORING CASE and with or without a

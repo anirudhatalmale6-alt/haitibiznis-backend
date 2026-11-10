@@ -20,13 +20,18 @@ const examAttemptSchema = new mongoose.Schema({
   timedOut: { type: Boolean, default: false },
   ok: Number, n: Number, pct: Number,
   passed: { type: Boolean, default: null },
-  cert: { type: String, default: '' },
+  cert: { type: String, default: '', index: true },   // 10 Nov: the unique certificate / Agent ID (issued by the server)
   lang: { type: String, default: 'ht', maxlength: 5 },
   /* 'online' = started on the server; 'offline' = the venue had no internet, the
      phone kept the result and sent it later (the 24 h rule could not be checked
      at the start for that one - it is flagged so Jennifer can see it). */
   mode: { type: String, enum: ['online', 'offline'], default: 'online' },
   clientRef: { type: String, default: '', maxlength: 40, index: true },   // offline results: sent twice = recorded once
+  /* 10 Nov 2026 (OPTION A): started with a confirmed paid seat (AcademyEnrollment); only then is there a certificate,
+     whose number the SERVER computes from the name and the Haiti date of the finish (ymd) */
+  paid: { type: Boolean, default: false },
+  enrollmentId: { type: String, default: '' },
+  ymd: { type: String, default: '' },
   ip: { type: String, default: '', maxlength: 64 },
   ua: { type: String, default: '', maxlength: 200 }
 }, { timestamps: true });

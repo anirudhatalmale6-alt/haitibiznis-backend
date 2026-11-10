@@ -48,6 +48,9 @@ const agentSchema = new mongoose.Schema({
      could not reproduce (typo on the original badge, date unknown). Shown in
      the console so nobody mistakes it for a computed match. */
   idMatched: { type: Boolean, default: true },
+  /* 10 Nov 2026: the exam attempt that issued this (random, unique) ID - such a record was created by the server for a
+     PAID student; the public page may add the photo but never change its name or phone. */
+  examAttempt: { type: String, default: '' },
 
   photo: { type: Buffer, select: false },
   photoMime: { type: String, default: '' },
