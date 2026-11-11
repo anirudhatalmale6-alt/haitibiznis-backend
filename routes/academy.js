@@ -486,6 +486,46 @@ router.post('/admin/enrollments/:id/release', requirePin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server' }); }
 });
 
+/* 11 Nov 2026 (Jeffery: "each newly confirmed payment, the student's name, WhatsApp number, payment status, and exam
+   eligibility, with a direct WhatsApp contact button"): the "🔔 New payments" box at the top of Jennifer's console */
+router.get('/admin/new-payments', requirePin, async (req, res) => {
+  try {
+    const st = await settings(), ids = await academyEventIds(st);
+    /* first use: the last 7 days, so nothing paid just before this box existed is missed */
+    const since = (st && st.paymentsSeenAt) || new Date(Date.now() - 7 * 86400000);
+    const txns = await Transaction.find({ event: { $in: ids }, status: 'completed', ticketPrice: { $gt: 0 }, paidAt: { $gt: since } })
+      .sort({ paidAt: -1 }).limit(100).lean();
+    const evs = {}; (await Event.find({ _id: { $in: [...new Set(txns.map((t) => String(t.event)))] } }).select('title date startTime location').lean()).forEach((e) => { evs[String(e._id)] = e; });
+    const rows = [];
+    for (const t of txns) {
+      const key = phoneKey(t.buyerPhone), used = await seatsUsed(t.referenceId), seat = key.length === 8 ? await activeSeat(key) : null;
+      const e = evs[String(t.event)] || {};
+      /* eligibility, in Jennifer's words: can the person on this phone start the official exam? */
+      let elig;
+      if (seat && !seat.refunded && seat.ticketRef === t.referenceId) elig = 'started';             // seat already bound (exam started)
+      else if (seat && !seat.refunded) elig = 'other_seat';                                          // this phone already holds another seat
+      else if (used < (t.qty || 1)) elig = 'eligible';
+      else elig = 'seats_used';
+      rows.push({ ref: t.referenceId, name: t.buyerName || '', phone: t.buyerPhone || '', qty: t.qty || 1, seatsUsed: used,
+        amount: t.paidAmount || t.totalAmount, paidAt: t.paidAt, method: t.paymentMethod || '', eligibility: elig,
+        event: { title: String(e.title || '').trim(), date: e.date || '', startTime: e.startTime || '', location: e.location || '' } });
+    }
+    res.set('Cache-Control', 'no-store');
+    res.json({ since, seenBy: (st && st.paymentsSeenBy) || '', count: rows.length, payments: rows });
+  } catch (e) { console.error('[ACAD] new-payments', e.message); res.status(500).json({ error: 'server' }); }
+});
+/* "✓ Mwen wè yo": everything paid up to the newest payment SHE SAW is marked seen (one paid a second later stays new) */
+router.post('/admin/new-payments/seen', requirePin, async (req, res) => {
+  try {
+    const b = req.body || {}, by = clip(b.by, 60), upTo = new Date(b.upTo);
+    if (!by) return res.status(400).json({ error: 'name_required' });
+    if (isNaN(upTo) || upTo > new Date(Date.now() + 60000)) return res.status(400).json({ error: 'bad_date' });
+    let st = await settings(); if (!st) st = new AcademySetting({ key: 'academy' });
+    if (!st.paymentsSeenAt || upTo > st.paymentsSeenAt) { st.paymentsSeenAt = upTo; st.paymentsSeenBy = by; await st.save(); }
+    res.json({ ok: true, seenAt: st.paymentsSeenAt });
+  } catch (e) { res.status(500).json({ error: 'server' }); }
+});
+
 /* the re-issue page (akademi/emet.html, console code): a student's certificate(s) by phone */
 router.get('/admin/certificates', requirePin, async (req, res) => {
   try {

@@ -12,6 +12,10 @@ const academySettingSchema = new mongoose.Schema({
   codeHash: { type: String, select: false },
   codeSetAt: Date,
   codeSetBy: { type: String, default: '' },
+  /* 11 Nov 2026 (Jeffery/Jennifer): the "🔔 New payments" box shows every confirmed training payment after this
+     moment; "✓ Mwen wè yo" moves it forward (shared: the tablet and the phone see the same list) */
+  paymentsSeenAt: Date,
+  paymentsSeenBy: { type: String, default: '' },
   eventIds: { type: [String], default: undefined },
   updatedBy: { type: String, default: '' }
 }, { timestamps: true });
