@@ -68,6 +68,39 @@ async function seatsHeld(eventId, ticketName) {
   return agg.length ? agg[0].n : 0;
 }
 
+/* Haiti's wall clock, whatever its DST rule is that year - never a fixed UTC offset. */
+function haitiNow() {
+  const p = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Port-au-Prince', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
+  const g = (t) => (p.find((x) => x.type === t) || {}).value;
+  return { day: g('year') + '-' + g('month') + '-' + g('day'), hm: g('hour') + ':' + g('minute') };
+}
+function hhmm(v) {
+  const m = /^\s*(\d{1,2})\s*[:hH]\s*(\d{2})/.exec(String(v || ''));
+  return m && +m[1] < 24 && +m[2] < 60 ? (m[1].padStart(2, '0') + ':' + m[2]) : null;
+}
+/* null = still on sale. Times compare as "HH:MM" strings, days as "YYYY-MM-DD" strings, both in Haiti time.
+   - cancelled: never.
+   - over: after the end time (an end before the start = it ends the next day); with no end time, at midnight - people
+     buy at the door after the start.
+   - an appointment slot: a ticket NAMED by its time ("10:00 — Masaj", "9h30") stops selling at that time, on that day. */
+function salesClosed(event, ticketName) {
+  if (event.status === 'cancelled') return { why: 'cancelled', msg: 'Evènman sa a anile. / This event was cancelled.' };
+  const day = /^\d{4}-\d{2}-\d{2}/.test(String(event.date || '')) ? String(event.date).slice(0, 10) : null;
+  if (!day) return null;
+  const now = haitiNow(), st = hhmm(event.startTime), en = hhmm(event.endTime);
+  let endDay = day, endHm = '23:59';
+  if (en) { endHm = en; if (st && en < st) endDay = new Date(Date.parse(day + 'T12:00:00Z') + 864e5).toISOString().slice(0, 10); }
+  if (now.day > endDay || (now.day === endDay && now.hm > endHm)) {
+    return { why: 'over', msg: 'Evènman sa a fini deja, nou pa ka achte tikè pou li ankò. / This event is over - tickets are no longer sold.' };
+  }
+  const slot = hhmm(ticketName);
+  if (slot && now.day === day && now.hm >= slot) {
+    return { why: 'slot_passed', msg: 'Lè sa a pase deja, chwazi yon lòt lè. / This time has already passed - please pick another time.' };
+  }
+  return null;
+}
+
 function genRef() {
   return 'TL-' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substring(2, 6).toUpperCase();
 }
@@ -366,6 +399,11 @@ router.post('/buy-ticket', async (req, res) => {
 
     const ticket = event.tickets.find(t => t.name === ticketName);
     if (!ticket) return res.status(404).json({ error: 'Ticket type not found' });
+
+    /* 24 Nov 2026 (launch audit item 3 + Jeffery's appointment book): a cancelled event, an event that is over, and
+       - on an appointment page - a time slot that has already passed today could all still be paid for. */
+    const closed = salesClosed(event, ticketName);
+    if (closed) return res.status(400).json({ error: closed.msg, closed: closed.why });
 
     /* 16 Oct 2026: a whole number from 1 to 20. "-50" used to reopen 50 places
        on a capped free event, and 1e9 multiplied an agent's commission. */
