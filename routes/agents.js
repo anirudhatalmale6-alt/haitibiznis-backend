@@ -452,7 +452,7 @@ router.get('/admin/merchants/:id', async (req, res) => {
   const r = await mppInt('GET', '/' + req.params.id); res.status(r.status).json(r.data);
 });
 router.post('/admin/merchants/:id/:act', async (req, res) => {
-  if (!OID.test(req.params.id) || !['approve', 'reject', 'fix', 'fix-done', 'reopen', 'document', 'welcome', 'review', 'edit', 'patente', 'assist', 'agent'].includes(req.params.act)) return res.status(404).json({ error: 'not_found' });
+  if (!OID.test(req.params.id) || !['approve', 'reject', 'fix', 'fix-done', 'reopen', 'document', 'welcome', 'review', 'edit', 'patente', 'assist', 'agent', 'booking-code'].includes(req.params.act)) return res.status(404).json({ error: 'not_found' });
   /* 16 Nov 2026: Jennifer attaches a business to its Ajan - by his code (KB-…) or his badge number (LMA-…), like for drivers */
   if (req.params.act === 'agent' && /^LMA-?\d{4}/i.test(String((req.body || {}).code || ''))) {
     const a = await CertifiedAgent.findOne({ agentId: normId(req.body.code) });

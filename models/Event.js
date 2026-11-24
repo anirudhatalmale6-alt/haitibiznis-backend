@@ -128,6 +128,10 @@ const eventSchema = new mongoose.Schema({
   },
   creatorPct: { type: Number, default: 0 },
   status: { type: String, enum: ['draft', 'published', 'cancelled'], default: 'published' },
+  /* 24 Nov 2026: an APPOINTMENT page attached to a MyPlopPlop service shop ("Pran Randevou" on the shop lists it).
+     Set ONLY by the server after MyPlopPlop confirmed the shop's booking code (or copied from a page that was). */
+  storeSlug: { type: String, index: true },
+  storeName: String,
   views: { type: Number, default: 0 },
 
   rsvps: [rsvpSchema],

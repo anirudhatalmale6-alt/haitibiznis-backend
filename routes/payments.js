@@ -1184,4 +1184,6 @@ module.exports = router;
    reconcile rather than repeating the logic, so there is one definition of
    what "confirm a payment" means and one atomic claim behind it. */
 module.exports.reconcile = reconcile;
+module.exports.salesClosed = salesClosed;
+module.exports.haitiDay = () => haitiNow().day;
 module.exports.deliverTicket = deliverTicket;

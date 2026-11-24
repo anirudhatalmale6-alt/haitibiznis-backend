@@ -85,8 +85,22 @@ router.post('/', async (req, res) => {
     delete body.manageHash;
     delete body.rsvps;
     delete body.trainingCommission;   /* admin-only (30% LajanMaker training): never from the organizer's form */
+    /* 24 Nov 2026: the shop link is decided here, never taken from the form as such */
+    const storeLink = body.storeLink, copyOf = body.copyOf, copyCode = body.copyManageCode;
+    ['storeSlug', 'storeName', 'storeLink', 'copyOf', 'copyManageCode'].forEach((k) => delete body[k]);
 
     const event = new Event(body);
+    if (storeLink && (storeLink.slug || storeLink.code)) {
+      const st = await storeBookingCheck(storeLink.slug, storeLink.code);
+      if (!st) return res.status(403).json({ error: 'Kòd randevou biznis la pa bon. / The shop appointment code is not right.', code: 'store_code_invalid' });
+      if (st === 'unavailable') return res.status(503).json({ error: 'MyPlopPlop pa reponn, eseye ankò nan yon minit. / MyPlopPlop is not answering - try again in a minute.' });
+      event.storeSlug = st.slug; event.storeName = st.name;
+    } else if (copyOf && /^[a-f0-9]{24}$/i.test(String(copyOf))) {
+      /* "Copy to another day": only the organiser holding the SOURCE page's manage code carries its shop link over */
+      const src = await Event.findById(copyOf).select('+manageSalt +manageHash storeSlug storeName');
+      if (!src || !src.checkManageCode(copyCode)) return res.status(403).json({ error: 'Se sèlman òganizatè paj la ki ka kopye l. / Only the page organiser can copy it.', code: 'copy_not_allowed' });
+      if (src.storeSlug) { event.storeSlug = src.storeSlug; event.storeName = src.storeName; }
+    }
     const manageCode = Event.newManageCode();
     event.setManageCode(manageCode);
     await event.save();
@@ -305,6 +319,49 @@ router.get('/:id/sponsors', async (req, res) => {
   }
 });
 
+/* ═══ 24 Nov 2026: MyPlopPlop service shops ↔ Tikè Lakay appointment pages ═══════════════════════════════════ */
+const KOUTYE_API = process.env.KOUTYE_API_URL || 'https://myplopplop-api.onrender.com';
+/* { slug, name } when MyPlopPlop confirms the shop's booking code, null when it says no, 'unavailable' when it could not
+   be asked (never treated as yes). */
+async function storeBookingCheck(slug, code) {
+  const key = process.env.INTERNAL_SERVICE_KEY;
+  if (!key) return 'unavailable';
+  slug = String(slug || '').trim().toLowerCase().slice(0, 120); code = String(code || '').trim().slice(0, 32);
+  if (!slug || !code) return null;
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 12000);
+  try {
+    const r = await fetch(KOUTYE_API + '/api/internal/store-booking-check', { method: 'POST', signal: ctl.signal,
+      headers: { 'Content-Type': 'application/json', 'x-internal-key': key }, body: JSON.stringify({ slug, code }) });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok && d.store) return d.store;
+    if (r.status === 403 || r.status === 400) return null;
+    return 'unavailable';
+  } catch (e) { return 'unavailable'; } finally { clearTimeout(t); }
+}
+
+/* GET /by-store/:slug - the shop's upcoming appointment days, each time with what is still free.
+   Public (it is what the shop's "Pran Randevou" shows); same rule as buying: a day that is over, or a time that has
+   passed today, is not offered. */
+router.get('/by-store/:slug', async (req, res) => {
+  try {
+    const slug = String(req.params.slug || '').trim().toLowerCase().slice(0, 120);
+    const { salesClosed, haitiDay } = require('./payments');
+    const today = haitiDay();
+    const rows = await Event.find({ storeSlug: slug, status: 'published', date: { $gte: today } })
+      .select('title date startTime endTime location tickets storeName').sort({ date: 1, startTime: 1 }).limit(60).lean();
+    const days = rows.filter((e) => !salesClosed(e, '')).map((e) => ({
+      _id: e._id, title: e.title, date: e.date, startTime: e.startTime || '', endTime: e.endTime || '', location: e.location || '',
+      times: (e.tickets || []).filter((t) => !salesClosed(e, t.name)).map((t) => ({
+        name: t.name, price: Number(t.price) || 0,
+        left: Number(t.qty) > 0 ? Math.max(0, Number(t.qty) - (Number(t.sold) || 0)) : null }))
+    })).filter((d) => d.times.length);
+    res.set('Cache-Control', 'no-store');
+    res.json({ slug, storeName: rows.length ? rows[0].storeName || '' : '', days });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     /* The view counter used to be event.views += 1 followed by event.save(),
@@ -356,7 +413,7 @@ router.put('/:id', async (req, res) => {
        editing the event, and the sold counts are money - they are moved by
        $inc from a confirmed payment and must not be settable by hand. */
     const body = { ...req.body };
-    ['manageSalt', 'manageHash', 'manageCode', 'rsvps', 'views', '_id', '__v', 'trainingCommission'].forEach(k => delete body[k]);
+    ['manageSalt', 'manageHash', 'manageCode', 'rsvps', 'views', '_id', '__v', 'trainingCommission', 'storeSlug', 'storeName', 'storeLink', 'copyOf', 'copyManageCode'].forEach(k => delete body[k]);
     if (Array.isArray(body.tickets)) {
       const soldByName = {};
       (event.tickets || []).forEach(t => { soldByName[t.name] = t.sold || 0; });
